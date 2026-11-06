@@ -13345,12 +13345,54 @@ static int _ASQ_CHECK(dc2::script::RunArguments, int) {
 
 /**
  *
+ * The last sound file loaded into the event sound port, so EdEventRestoreEventSound can reload it.
+ *
+ */
+static std::string event_port_sound_file;
+
+/**
+ *
  * Initializes a sound port.
  *
  */
 static int _SND_INIT_PORT(dc2::script::RunArguments stack) {
-    sndInitPort(dc2::script::RunInteger(stack));
+    const int port = dc2::script::RunInteger(stack);
+
+    // A script that clears the event port means it, so nothing reloads it afterwards.
+    if (port == SND_PORT_EVENT) {
+        event_port_sound_file.clear();
+    }
+
+    sndInitPort(port);
     return true;
+}
+
+bool EdEventRestoreEventSound() {
+    if (sndSeAvailable(EdEventInfo.snd_id[SND_PORT_EVENT], 0)) {
+        return true;
+    }
+
+    if (event_port_sound_file.empty() || BuffEventSnd.stack == nullptr || BuffEventSnd.stack_size <= 0) {
+        return false;
+    }
+
+    // Read straight from the game data: the event reader can reset an active event's pack on a miss.
+    std::string path = event_port_sound_file;
+    FileNameConvLanguage(path.data());
+    const auto file_read = dc2::io::ReadFile(path);
+    u32       *pack = reinterpret_cast<u32 *>(file_read.Bytes().data());
+
+    if (pack == nullptr) {
+        CT_LOG_WARN(Audio, "event sound: could not reread {} for slot {}", event_port_sound_file, static_cast<int>(SND_PORT_EVENT));
+        event_port_sound_file.clear();
+        return false;
+    }
+
+    sndInitPort(SND_PORT_EVENT);
+    const int sound_id = sndLoadSound(SND_PORT_EVENT, pack, &BuffEventSnd);
+    EdEventInfo.snd_id[SND_PORT_EVENT] = sound_id;
+    CT_LOG_INFO(Audio, "event sound: slot {} reloaded {} as sound {}", static_cast<int>(SND_PORT_EVENT), event_port_sound_file, sound_id);
+    return sndSeAvailable(sound_id, 0);
 }
 
 /**
@@ -13418,7 +13460,12 @@ static int _SND_LOAD_SOUND(dc2::script::RunArguments stack, int argc) {
     sndInitPort(port);
     SetStack(stack, sound_id = sndLoadSound(port, pack, memory));
     EdEventInfo.snd_id[port] = sound_id;
-        CT_LOG_INFO(Audio, "event sound: slot {} loaded {} as sound {}", port, std::string(file_name), sound_id);
+
+    if (port == SND_PORT_EVENT) {
+        event_port_sound_file = file_name;
+    }
+
+    CT_LOG_INFO(Audio, "event sound: slot {} loaded {} as sound {}", port, std::string(file_name), sound_id);
     EdEventInfo.last_snd_id = sound_id;
     return true;
 }

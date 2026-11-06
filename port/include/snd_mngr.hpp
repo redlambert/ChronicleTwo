@@ -780,6 +780,13 @@ void sndSePlay(unsigned int snd_id, int se_no, int voice);
 
 /**
  *
+ * Tells whether a sound effect can still be played: its port, bank and effect table are all live.
+ *
+ */
+bool sndSeAvailable(unsigned int snd_id, int se_no);
+
+/**
+ *
  * Plays a sound effect at a volume and the middle pan.
  *
  * @mangled sndSePlayV__FUiiii

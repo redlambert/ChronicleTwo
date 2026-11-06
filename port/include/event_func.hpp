@@ -2367,6 +2367,16 @@ void EdEventInit();
 
 /**
  *
+ * Reloads the last sound file loaded into the event sound port when its bank no longer exists.
+ * EdEventInit resets the event sound memory, which retires the bank even when the event loads
+ * nothing into the event port. Retail kept playing the stale bank (the dungeon battle music), so
+ * the port reloads the same file instead. Returns whether the event port's first effect can play.
+ *
+ */
+bool EdEventRestoreEventSound();
+
+/**
+ *
  * Draws the event's stopwatch and its other timers.
  *
  * @mangled EventTimeDraw__Fv

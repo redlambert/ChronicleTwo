@@ -1141,6 +1141,27 @@ int sndSeCheck(unsigned int snd_id, int se_no) {
     return 1;
 }
 
+bool sndSeAvailable(unsigned int snd_id, int se_no) {
+    if (snd_id == (unsigned int) -1) {
+        return false;
+    }
+
+    sndPortInfo *info = GetPortInfo(GetPortNo(snd_id));
+
+    if (info == nullptr) {
+        return false;
+    }
+
+    sndBankInfo *bank = info->GetBank(GetBankNo(snd_id));
+
+    if (bank == nullptr) {
+        return false;
+    }
+
+    const std::optional<sndSeInfo> se = bank->GetSe(se_no);
+    return se && se->type != SND_SE_TYPE_NONE;
+}
+
 void sndSePlaySeID(unsigned int snd_id, int se_no, int velocity, int vol, int pan, int pitch, int voice) {
     int                          port_no = {};
     int                          bank_no = {};
@@ -1185,7 +1206,6 @@ void sndSePlaySeID(unsigned int snd_id, int se_no, int velocity, int vol, int pa
     if (se->type == SND_SE_TYPE_SQ) {
         CT_LOG_INFO(Audio, "music play: sound {} effect {} state {} saved volume {} volume {}", snd_id, se_no, info->sq_state, info->sq_vol, vol);
     }
-
     if (se->type == SND_SE_TYPE_SQ && info->sq_state != SND_SQ_STATE_PLAY) {
         if (info->sq_state == SND_SQ_STATE_PAUSE || info->sq_state == SND_SQ_STATE_PORT_PAUSE) {
             sndSqRePlay(info->sq_port, se->prog);
@@ -1260,7 +1280,6 @@ void sndSeStop(unsigned int snd_id, int se_no, int voice) {
     if (se->type == SND_SE_TYPE_SQ) {
         CT_LOG_INFO(Audio, "music stop: sound {} effect {} state {}", snd_id, se_no, info->sq_state);
     }
-
     if (se->type == SND_SE_TYPE_SQ && info->sq_state != SND_SQ_STATE_STOP) {
         sndSqStop(info->sq_port, se->prog);
         info->sq_state = SND_SQ_STATE_STOP;
