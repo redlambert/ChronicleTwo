@@ -60059,6 +60059,7 @@
           24
          ],
          "distinct_constants": 12,
+         "tagged": true,
          "name_source": "curated"
         },
         {
@@ -60069,6 +60070,7 @@
           "out f32": 1001,
           "out s32": 775
          },
+         "tagged": true,
          "name_source": "curated"
         }
        ]
