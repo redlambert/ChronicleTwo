@@ -13352,6 +13352,29 @@ static std::string event_port_sound_file;
 
 /**
  *
+ * Memory for the event sound port alone. Retail kept the port's bank in BuffEventSnd, which every event's
+ * EdEventInit resets; the stale bank (the dungeon battle music) kept playing because nothing overwrote it.
+ * The port's own memory is reset only when something is loaded into the port, so events that load nothing
+ * there leave its bank alive instead of retiring it.
+ *
+ */
+static u_long128 event_port_snd_buff[EVENT_SND_BUFFER_SIZE];
+static mgCMemory BuffEventPortSnd;
+
+/**
+ *
+ * Prepares the event sound port's own memory for a new load and returns it.
+ *
+ */
+static mgCMemory *ResetEventPortSoundMemory() {
+    BuffEventPortSnd.stSetBuffer(event_port_snd_buff, EVENT_SND_BUFFER_SIZE);
+    dc2::text::Copy(BuffEventPortSnd.name, "Event Port Snd");
+    BuffEventPortSnd.stReset();
+    return &BuffEventPortSnd;
+}
+
+/**
+ *
  * Initializes a sound port.
  *
  */
@@ -13372,7 +13395,7 @@ bool EdEventRestoreEventSound() {
         return true;
     }
 
-    if (event_port_sound_file.empty() || BuffEventSnd.stack == nullptr || BuffEventSnd.stack_size <= 0) {
+    if (event_port_sound_file.empty()) {
         return false;
     }
 
@@ -13389,7 +13412,7 @@ bool EdEventRestoreEventSound() {
     }
 
     sndInitPort(SND_PORT_EVENT);
-    const int sound_id = sndLoadSound(SND_PORT_EVENT, pack, &BuffEventSnd);
+    const int sound_id = sndLoadSound(SND_PORT_EVENT, pack, ResetEventPortSoundMemory());
     EdEventInfo.snd_id[SND_PORT_EVENT] = sound_id;
     CT_LOG_INFO(Audio, "event sound: slot {} reloaded {} as sound {}", static_cast<int>(SND_PORT_EVENT), event_port_sound_file, sound_id);
     return sndSeAvailable(sound_id, 0);
@@ -13455,6 +13478,10 @@ static int _SND_LOAD_SOUND(dc2::script::RunArguments stack, int argc) {
 
     if (pack == nullptr) {
         return false;
+    }
+
+    if (port == SND_PORT_EVENT) {
+        memory = ResetEventPortSoundMemory();
     }
 
     sndInitPort(port);
