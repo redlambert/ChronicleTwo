@@ -1858,6 +1858,7 @@ end
 
 --- The dungeon system event run when the player steps into a random circle.
 function script.random_circle()
+	print("coin: event started\n")
 	local active_chr_no: s32 = 0
 	local var1: f32 = 0
 	local var2: f32 = 0
@@ -1947,8 +1948,10 @@ function script.random_circle()
 	helper_479dc9e9()
 	var11 = event.load_sound_effect_file_3(8, "snd2/sp/sp_011.sound.json") or var11
 	event.start_background_file_loads_2("event/dng/ring.gltf", "event/dng/randomcoin.gltf")
+	print("coin: waiting for ring and coin models\n")
 	vm.wait(5)
 	helper_479dc9e9()
+	print("coin: models loaded\n")
 	weight = event.get_random_circle_motion_frame() or weight
 	event.deactivate_random_circle(-1)
 	event.load_character(5, "event/dng/ring.gltf", "info", 12)
@@ -1976,7 +1979,11 @@ function script.random_circle()
 	event.move_object_sequence_eased(5, pos_x_2, pos_y_2 + 40.0, pos_z_2, 30, 2, 0.5)
 	var17 = 0
 	var18 = vm.f32(0.6)
+	print("coin: fast spin started\n")
 	while true do
+		if var17 % 30 == 0 then
+			print("coin: fast spin frame ", var17, " button ", helper_581cb30c(0), " rotation ", var14, "\n")
+		end
 		do
 			local _, out2, _ = event.get_character_rotation(13)
 			var14 = out2 or var14
@@ -1993,6 +2000,7 @@ function script.random_circle()
 		if (if var17 >= 30 then helper_581cb30c(0) else 0) ~= 0 or var17 > 300 then
 			event.stop_sound_effect(var11, 0)
 			event.play_sound_effect(var11, 3)
+			print("coin: fast spin ended at frame ", var17, "\n")
 			vm.wait(7)
 			break
 		else
@@ -2018,7 +2026,11 @@ function script.random_circle()
 	var26 = vm.float_bits(event.get_random_number(10)) or var26
 	var26 = vm.i32(var26 + 4)
 	var17 = 0
+	print("coin: slowing spin started, target ", var25, " start slowing after ", var26, "\n")
 	while true do
+		if var17 % 30 == 0 then
+			print("coin: slowing frame ", var17, " rotation ", var14, " speed ", var18, "\n")
+		end
 		do
 			local _, out2, _ = event.get_character_rotation(13)
 			var14 = out2 or var14
@@ -2048,6 +2060,7 @@ function script.random_circle()
 		end
 		var17 = vm.i32(var17 + 1)
 	end
+	print("coin: landed on ", circle_id, "\n")
 	helper_888ab2a3(20)
 	var28 = vm.float_bits(event.get_random_number(10)) or var28
 	if var28 < 6 then
