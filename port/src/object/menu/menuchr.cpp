@@ -5234,6 +5234,9 @@ int MenuItemCharaDataLoad(mgCMemory *stack, int chara_no, MENU_BGREAD_INFO2 **in
     return total;
 }
 
+// The Items preview's sword trail. SwordEffectStack holds the field character's trail, which the preview must not rebind.
+static mgCMemory MenuPreviewSwordEffectStack;
+
 /**
  *
  * Loads a character model, skin, or equipped part for the menu preview.
@@ -5287,9 +5290,11 @@ static void MenuItemCharaDataLoadPack(int chara_no, CActionChara *chara, CAction
                 }
 
                 if (body != nullptr && part == 2 && stack != nullptr && CheckBattleLoop()) {
-                    int rest = stack->stGetRest();
-                    SwordEffectStack.stShareBuffer(*stack, std::span(stack->stGetTop(), static_cast<std::size_t>(rest)));
-                    SetSwordBlurEffect(body, &SwordEffectStack, blur_type);
+                    // A blur type below zero is the menu preview; the field character keeps its own trail arena.
+                    mgCMemory &sword_stack = blur_type < 0 ? MenuPreviewSwordEffectStack : SwordEffectStack;
+                    int        rest = stack->stGetRest();
+                    sword_stack.stShareBuffer(*stack, std::span(stack->stGetTop(), static_cast<std::size_t>(rest)));
+                    SetSwordBlurEffect(body, &sword_stack, blur_type);
                 }
 
                 break;
