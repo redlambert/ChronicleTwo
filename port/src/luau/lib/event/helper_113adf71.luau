@@ -6,6 +6,9 @@ local wait_frames = require("@lib/event/wait_frames")
 
 --- Helper function.
 local function helper_113adf71(arg0: any)
+	-- Test: hide the item shot's backdrop and sparkle before cutting back to Max and Cedric.
+	event.set_character_active(0, 36)
+	event.set_object_handle_visible(5, 0)
 	event.set_camera_sequence_position(51.28, 21.78, -97.62)
 	event.set_camera_sequence_look_at(50.16, 19.92, -141.52)
 	event.set_object_sequence_position(0, 58.4, -0.02, -135.54)
