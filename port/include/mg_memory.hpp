@@ -30,6 +30,16 @@ namespace dc2::memory {
 std::uint64_t ArenaGeneration(const mgCMemory &memory);
 void          InvalidateArenaGeneration(const mgCMemory &memory);
 /**
+ * Diagnostic check run before and after every arena reset, rebind or free on the thread that installed it.
+ *
+ * It returns whether the watched resource is live; a reset that turns it from live to dead is logged with a backtrace.
+ */
+using ResetWatch = bool (*)();
+/**
+ * Installs the reset watch for the calling thread; null removes it.
+ */
+void SetResetWatch(ResetWatch watch);
+/**
  *
  * Reports whether an arena's root mapping and explicit parent leases remain live.
  *

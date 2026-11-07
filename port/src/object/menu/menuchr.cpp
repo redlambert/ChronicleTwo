@@ -7887,6 +7887,18 @@ mgCMemory SwordEffectStack;
 mgCMemory MosBookStack;
 
 namespace {
+/**
+ * Whether the main scene's player character and every resource it references are live, for the arena reset watch.
+ */
+bool MainScenePlayerLive() {
+    CScene *scene = GetMainScene();
+    if (scene == nullptr || scene->chara_num <= 0) {
+        return false;
+    }
+    const auto &slot = scene->chara[0];
+    return slot.Resource().HasValue() && slot.ResourcesLive();
+}
+
 void InitMainCharaBGCore(int chara_no, mgCMemory *stack, int mode) {
     int                reason = {};
     mgCTextureManager *tex_manager = {};
@@ -7955,6 +7967,14 @@ void InitMainCharaBGCore(int chara_no, mgCMemory *stack, int mode) {
     }
 
     ReEquipFishingGameWeapon();
+
+    dc2::memory::SetResetWatch(&MainScenePlayerLive);
+    CT_LOG_INFO(Menu, "quick change to {} from {}: workspace [{}], load [{}], parts [{}] [{}] [{}] [{}] [{}] [{}] [{}]",
+                NowReadMainCharaNo, active_chara, static_cast<void *>(MenuArg.chara_stack),
+                static_cast<void *>(&MenuCharaLoadStack), static_cast<void *>(&MorattaStack[0]),
+                static_cast<void *>(&MorattaStack[1]), static_cast<void *>(&MorattaStack[2]),
+                static_cast<void *>(&MorattaStack[3]), static_cast<void *>(&MorattaStack[4]),
+                static_cast<void *>(&MorattaStack[5]), static_cast<void *>(&MorattaStack[6]));
 
     dc2::character::RepartitionUnitStorage(*MenuMainScene, MenuArg.chara_stack, MorattaStack,
                                            NowReadMainCharaNo, mode == 1);

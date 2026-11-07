@@ -14,6 +14,8 @@
 #include <mutex>
 #include <print>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -28,9 +30,97 @@
 #include "profile.hpp"
 #include "texture_source.hpp"
 
+#if defined(__GNUC__) && __has_include(<unwind.h>)
+#include <unwind.h>
+#define CT_RESET_WATCH_BACKTRACE 1
+#endif
+
 namespace {
 void ForgetRun(const mgCMemory *memory);
 } // namespace
+
+namespace {
+
+std::atomic<dc2::memory::ResetWatch> reset_watch{nullptr};
+std::atomic<std::thread::id>         reset_watch_thread{};
+thread_local int                     reset_watch_depth = 0;
+
+#ifdef CT_RESET_WATCH_BACKTRACE
+struct ResetTrace {
+    std::array<std::uintptr_t, 20> frames{};
+    int                            count = 0;
+};
+
+_Unwind_Reason_Code ResetTraceStep(_Unwind_Context *context, void *argument) {
+    auto *trace = static_cast<ResetTrace *>(argument);
+    if (trace->count >= static_cast<int>(trace->frames.size())) {
+        return _URC_END_OF_STACK;
+    }
+    trace->frames[static_cast<std::size_t>(trace->count++)] = static_cast<std::uintptr_t>(_Unwind_GetIP(context));
+    return _URC_NO_REASON;
+}
+#endif
+
+/**
+ * Describes the calling code: an anchor address with a known symbol, then the return addresses on the stack.
+ */
+std::string ResetBacktrace() {
+    std::string text =
+        std::format("anchor {:#x}", reinterpret_cast<std::uintptr_t>(&dc2::memory::InvalidateArenaGeneration));
+#ifdef CT_RESET_WATCH_BACKTRACE
+    ResetTrace trace;
+    _Unwind_Backtrace(&ResetTraceStep, &trace);
+    text += ", frames";
+    for (int index = 0; index < trace.count; ++index) {
+        text += std::format(" {:#x}", trace.frames[static_cast<std::size_t>(index)]);
+    }
+#endif
+    return text;
+}
+
+/**
+ * Logs the arena operation that turns the watched resource from live to dead.
+ */
+class ResetWatchGuard {
+public:
+    ResetWatchGuard(const mgCMemory &memory, const char *operation) : memory(memory), operation(operation) {
+        ++reset_watch_depth;
+        watch = reset_watch.load(std::memory_order_acquire);
+        if (watch == nullptr || reset_watch_depth != 1 ||
+            reset_watch_thread.load(std::memory_order_acquire) != std::this_thread::get_id()) {
+            watch = nullptr;
+            return;
+        }
+        live_before = watch();
+    }
+
+    ~ResetWatchGuard() {
+        if (watch != nullptr && live_before && !watch()) {
+            const std::string_view name(memory.name, strnlen(memory.name, sizeof(memory.name)));
+            CT_LOG_WARN(Memory, "reset watch: {} of arena '{}' [{}] ({} quadwords) retired scene character 0; {}",
+                        operation, name, static_cast<const void *>(&memory), memory.stack_size, ResetBacktrace());
+        }
+        --reset_watch_depth;
+    }
+
+    ResetWatchGuard(const ResetWatchGuard &) = delete;
+    ResetWatchGuard &operator=(const ResetWatchGuard &) = delete;
+
+private:
+    const mgCMemory        &memory;
+    const char             *operation;
+    dc2::memory::ResetWatch watch = nullptr;
+    bool                    live_before = false;
+};
+
+} // namespace
+
+namespace dc2::memory {
+void SetResetWatch(ResetWatch watch) {
+    reset_watch_thread.store(std::this_thread::get_id(), std::memory_order_release);
+    reset_watch.store(watch, std::memory_order_release);
+}
+} // namespace dc2::memory
 
 namespace dc2::memory {
 namespace {
@@ -688,6 +778,7 @@ void InstallArenaBinding(const mgCMemory &memory, ArenaBinding binding) {
 } // namespace
 
 void InvalidateArenaGeneration(const mgCMemory &memory) {
+    const ResetWatchGuard watch_guard(memory, "rebind");
     auto                 &registry = Generations();
     const std::lock_guard lock(registry.mutex);
     EndLivenessLocked();
@@ -765,6 +856,7 @@ void ResizeHeapBlock(const mgCMemory &memory, const void *start, std::size_t byt
 } // namespace
 
 void ResetArenaStack(const mgCMemory &memory) {
+    const ResetWatchGuard watch_guard(memory, "reset");
     ::ForgetRun(&memory);
     if (memory.stack_block == nullptr) {
         if (memory.heap_top == nullptr) {
@@ -1461,6 +1553,7 @@ void mgCMemory::Free(u_long128 *data) {
 
     const auto released_quads = found == stack_block ? static_cast<std::size_t>(stack_size)
                                                      : static_cast<std::size_t>(found->size) - kHeaderQuadwords;
+    const ResetWatchGuard watch_guard(*this, "free");
     dc2::memory::RetireArenaRange(*this, found->data, released_quads * sizeof(u_long128));
     prev->next = found->next;
     if (found == stack_block) {
