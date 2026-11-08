@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,7 @@
 #include "dynamicanime.hpp"
 #include "effect.hpp"
 #include "gameutil.hpp"
+#include "log/log.hpp"
 #include "mg_dataset.hpp"
 #include "mg_math.hpp"
 #include "mg_shadow.hpp"
@@ -195,6 +197,17 @@ void EnterModelTextures(const std::shared_ptr<Document> &source, std::optional<s
  * Parsed documents shared by the model and its associated motion resources.
  */
 std::unordered_map<std::string, std::shared_ptr<Document>> documents;
+
+/**
+ * Parsed gameplay sidecars (.game.json with any .character.json merged in), keyed by the files' stamps.
+ * Menus and swaps rebuild the same characters repeatedly, and each build asked for these again.
+ */
+struct GameplayEntry {
+    std::shared_ptr<const nlohmann::json> game;
+    std::string                           identity;
+};
+std::unordered_map<std::string, GameplayEntry> gameplay_cache;
+std::mutex                                     gameplay_cache_mutex;
 
 /**
  * Standard inverse-bind matrices shared by copied visuals through their weight arrays.
@@ -493,7 +506,45 @@ const fastgltf::Node &ContentNode(const Document &document, std::size_t frame) {
 /**
  * Parses the highest-priority valid gameplay sidecar and names the exact file contents it came from.
  */
+std::shared_ptr<const Json> ParseGameplayUncached(const std::filesystem::path &gltf, std::string &error, std::string &identity);
+
+/**
+ * Cached front for ParseGameplay. The key covers every sidecar file that could be read, with its stamp,
+ * so a replaced or edited sidecar parses again.
+ */
 std::shared_ptr<const Json> ParseGameplay(const std::filesystem::path &gltf, std::string &error, std::string &identity) {
+    auto sidecar = gltf;
+    sidecar.replace_extension(".game.json");
+    auto character = gltf;
+    character.replace_extension(".character.json");
+    std::string key = gltf.generic_string();
+    for (const auto &path : datapacks::Candidates(sidecar)) {
+        key += '|' + path.Display() + '|' + vfs::Stamp(path);
+    }
+    key += "|character";
+    for (const auto &path : datapacks::GameplayCandidates(character)) {
+        key += '|' + path.Display() + '|' + vfs::Stamp(path);
+    }
+    {
+        std::lock_guard lock(gameplay_cache_mutex);
+        if (const auto found = gameplay_cache.find(key); found != gameplay_cache.end()) {
+            error.clear();
+            identity = found->second.identity;
+            return found->second.game;
+        }
+    }
+    const auto start = std::chrono::steady_clock::now();
+    auto       game = ParseGameplayUncached(gltf, error, identity);
+    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (game) {
+        CT_LOG_INFO(Data, "timing: gameplay json {} parsed in {:.1f} ms (cached from now on)", gltf.generic_string(), ms);
+        std::lock_guard lock(gameplay_cache_mutex);
+        gameplay_cache.insert_or_assign(key, GameplayEntry{game, identity});
+    }
+    return game;
+}
+
+std::shared_ptr<const Json> ParseGameplayUncached(const std::filesystem::path &gltf, std::string &error, std::string &identity) {
     auto sidecar = gltf;
     sidecar.replace_extension(".game.json");
     error = "native gameplay JSON missing: " + sidecar.generic_string();
@@ -1570,6 +1621,10 @@ std::string PictureName(const texture_catalog::Entry &entry, const std::string &
 void Clear() {
     character_motion::Clear();
     documents.clear();
+    {
+        std::lock_guard lock(gameplay_cache_mutex);
+        gameplay_cache.clear();
+    }
     inverse_binds.clear();
     native_channels.clear();
     native_morphs.clear();
