@@ -1401,9 +1401,87 @@ void RefreshFaces(mgCVisualMDT &visual) {
 /**
  * Builds native vertices, materials and face groups directly from glTF mesh accessors.
  */
+/**
+ * One mesh's converted vertex streams and primitives, copied out after its first conversion. Converting reads every
+ * element through JSON, so a mesh loaded again (Max's outfit on every menu open) copies these back instead.
+ * Materials are not kept: their textures belong to the texture manager of each load.
+ */
+struct MeshImage {
+    struct Face {
+        u_short          type = 0;
+        short            index_stride = 0;
+        short            material = 0;
+        short            index_num = 0;
+        short            vertex_num = 0;
+        std::vector<int> index;
+    };
+
+    int                                 counts[4] = {};
+    std::vector<std::array<float, 4>>   streams[4];
+    std::vector<Face>                   faces;
+    std::optional<NativeMorph>          morph;
+};
+
+/**
+ * A mesh image, kept with the cached mesh identity it was converted from; the identity's address is the key.
+ */
+struct MeshImageEntry {
+    std::shared_ptr<const Json>      identity;
+    std::shared_ptr<const MeshImage> image;
+};
+
+std::unordered_map<const Json *, MeshImageEntry> mesh_images;
+std::mutex                                      mesh_images_mutex;
+
+/**
+ * Fills a visual's materials from the mesh identity, looking textures up in this load's texture manager.
+ */
+void MeshMaterials(Document &document, const fastgltf::Mesh &mesh, const Json &detail, mgCVisualMDT &visual,
+                   mgCMemory &memory, mgCTextureManager &textures);
+
 void Mesh(Document &document, const fastgltf::Node &node, const Json &detail, mgCVisualMDT &visual,
-          mgCMemory &memory, mgCTextureManager &textures) {
+          mgCMemory &memory, mgCTextureManager &textures, const MeshImage *cached = nullptr, MeshImage *capture = nullptr) {
     const auto &mesh = document.asset.meshes.at(*node.meshIndex);
+    if (cached != nullptr) {
+        // Same allocation order as a full conversion, so the arena ends up laid out the same way.
+        visual.vertex_num = cached->counts[0];
+        visual.normal_num = cached->counts[1];
+        visual.uv_num = cached->counts[2];
+        visual.colour_num = cached->counts[3];
+        visual.vertex = Allocate<sceVu0FVECTOR>(memory, visual.vertex_num);
+        visual.normal = Allocate<sceVu0FVECTOR>(memory, visual.normal_num);
+        visual.uv = Allocate<sceVu0FVECTOR>(memory, visual.uv_num);
+        visual.colour = Allocate<sceVu0FVECTOR>(memory, visual.colour_num);
+        float (*restored[4])[4] = {visual.vertex, visual.normal, visual.uv, visual.colour};
+        for (int stream = 0; stream < 4; ++stream) {
+            if (!cached->streams[stream].empty()) {
+                std::memcpy(restored[stream], cached->streams[stream].data(), cached->streams[stream].size() * sizeof(sceVu0FVECTOR));
+            }
+        }
+        MeshMaterials(document, mesh, detail, visual, memory, textures);
+        mgFACE_GROUP **tail = &visual.face_group;
+        for (const auto &image : cached->faces) {
+            auto *face = Allocate<mgCFace>(memory);
+            face->type = image.type;
+            face->material = image.material;
+            face->vertex_num = image.vertex_num;
+            face->index_stride = image.index_stride;
+            face->index_num = image.index_num;
+            face->index = Allocate<int>(memory, face->index_num);
+            if (!image.index.empty()) {
+                std::memcpy(face->index, image.index.data(), image.index.size() * sizeof(int));
+            }
+            auto *group = Allocate<mgFACE_GROUP>(memory);
+            group->material = face->material;
+            group->face = face;
+            *tail = group;
+            tail = &group->next;
+        }
+        if (cached->morph) {
+            native_morphs.insert_or_assign(visual.vertex, *cached->morph);
+        }
+        return;
+    }
     if (mesh.primitives.size() != detail.at("primitives").size()) {
         throw std::runtime_error("primitive identity count mismatch");
     }
@@ -1430,36 +1508,7 @@ void Mesh(Document &document, const fastgltf::Node &node, const Json &detail, mg
             }
         }
     }
-    visual.material_num = ModelInteger<int>(detail.at("material_count"));
-    visual.material = Allocate<mgMaterial>(memory, visual.material_num);
-    for (int index = 0; index < visual.material_num; ++index) {
-        const Json *material = std::cmp_less(index, detail.at("materials").size()) ? &detail.at("materials").at(index) : nullptr;
-        std::size_t gltf_material = document.asset.materials.size();
-        for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size(); ++primitive_index) {
-            const auto &primitive = detail.at("primitives").at(primitive_index);
-            if (ModelInteger<int>(primitive.at("material")) == index) {
-                gltf_material = ModelInteger<std::size_t>(primitive.at("gltf_material"));
-                break;
-            }
-        }
-        for (int component = 0; component < 4; ++component) {
-            const float factor = gltf_material < document.asset.materials.size() ? document.asset.materials[gltf_material].pbrData.baseColorFactor[component] : material ? std::clamp(material->at("diffuse").at(component).get<float>(), 0.0f, 1.0f)
-                                                                                                                                                                         : 1;
-            const float original = material ? material->at("diffuse").at(component).get<float>() : factor;
-            visual.material[index].diffuse[component] = !document.overlaid && factor == std::clamp(original, 0.0f, 1.0f) ? original : factor;
-            visual.material[index].unk_10[component] = material ? material->at("ambient").at(component).get<float>() : 0;
-        }
-        const auto name = material ? material->at("texture").get<std::string>() : "gltf_" + std::to_string(index);
-        const auto game_name = GameName(name);
-        visual.material[index].texture = textures.GetTexture(const_cast<char *>(game_name.c_str()), -1);
-        if (gltf_material < document.asset.materials.size()) {
-            const auto &pbr = document.asset.materials[gltf_material].pbrData;
-            if (pbr.baseColorTexture && (!visual.material[index].texture || document.overlaid)) {
-                const auto texture_name = document.overlaid ? "gltf_" + std::to_string(std::hash<std::string>{}(document.relative.generic_string()) & 0xffffffffu) + "_" + std::to_string(index) : game_name;
-                visual.material[index].texture = Image(document, pbr.baseColorTexture->textureIndex, memory, textures, texture_name);
-            }
-        }
-    }
+    MeshMaterials(document, mesh, detail, visual, memory, textures);
     mgFACE_GROUP **group_tail = &visual.face_group;
     for (std::size_t index = 0; index < mesh.primitives.size(); ++index) {
         const auto &primitive = mesh.primitives[index];
@@ -1579,6 +1628,60 @@ void Mesh(Document &document, const fastgltf::Node &node, const Json &detail, mg
             }
         }
         native_morphs.insert_or_assign(visual.vertex, std::move(morph));
+    }
+    if (capture != nullptr) {
+        const int    counts_now[4] = {visual.vertex_num, visual.normal_num, visual.uv_num, visual.colour_num};
+        float (*converted[4])[4] = {visual.vertex, visual.normal, visual.uv, visual.colour};
+        for (int stream = 0; stream < 4; ++stream) {
+            capture->counts[stream] = counts_now[stream];
+            capture->streams[stream].resize(static_cast<std::size_t>(counts_now[stream]));
+            if (counts_now[stream] > 0) {
+                std::memcpy(capture->streams[stream].data(), converted[stream], static_cast<std::size_t>(counts_now[stream]) * sizeof(sceVu0FVECTOR));
+            }
+        }
+        for (auto *group = visual.face_group; group != nullptr; group = group->next) {
+            const auto *face = group->face;
+            capture->faces.push_back({.type = face->type, .index_stride = face->index_stride, .material = face->material,
+                                      .index_num = face->index_num, .vertex_num = face->vertex_num,
+                                      .index = std::vector<int>(face->index, face->index + face->index_num)});
+        }
+        if (const auto found = native_morphs.find(visual.vertex); found != native_morphs.end() && !mesh.primitives.empty() && !mesh.primitives.front().targets.empty()) {
+            capture->morph = found->second;
+        }
+    }
+}
+
+void MeshMaterials(Document &document, const fastgltf::Mesh &mesh, const Json &detail, mgCVisualMDT &visual,
+                   mgCMemory &memory, mgCTextureManager &textures) {
+    visual.material_num = ModelInteger<int>(detail.at("material_count"));
+    visual.material = Allocate<mgMaterial>(memory, visual.material_num);
+    for (int index = 0; index < visual.material_num; ++index) {
+        const Json *material = std::cmp_less(index, detail.at("materials").size()) ? &detail.at("materials").at(index) : nullptr;
+        std::size_t gltf_material = document.asset.materials.size();
+        for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size(); ++primitive_index) {
+            const auto &primitive = detail.at("primitives").at(primitive_index);
+            if (ModelInteger<int>(primitive.at("material")) == index) {
+                gltf_material = ModelInteger<std::size_t>(primitive.at("gltf_material"));
+                break;
+            }
+        }
+        for (int component = 0; component < 4; ++component) {
+            const float factor = gltf_material < document.asset.materials.size() ? document.asset.materials[gltf_material].pbrData.baseColorFactor[component] : material ? std::clamp(material->at("diffuse").at(component).get<float>(), 0.0f, 1.0f)
+                                                                                                                                                                         : 1;
+            const float original = material ? material->at("diffuse").at(component).get<float>() : factor;
+            visual.material[index].diffuse[component] = !document.overlaid && factor == std::clamp(original, 0.0f, 1.0f) ? original : factor;
+            visual.material[index].unk_10[component] = material ? material->at("ambient").at(component).get<float>() : 0;
+        }
+        const auto name = material ? material->at("texture").get<std::string>() : "gltf_" + std::to_string(index);
+        const auto game_name = GameName(name);
+        visual.material[index].texture = textures.GetTexture(const_cast<char *>(game_name.c_str()), -1);
+        if (gltf_material < document.asset.materials.size()) {
+            const auto &pbr = document.asset.materials[gltf_material].pbrData;
+            if (pbr.baseColorTexture && (!visual.material[index].texture || document.overlaid)) {
+                const auto texture_name = document.overlaid ? "gltf_" + std::to_string(std::hash<std::string>{}(document.relative.generic_string()) & 0xffffffffu) + "_" + std::to_string(index) : game_name;
+                visual.material[index].texture = Image(document, pbr.baseColorTexture->textureIndex, memory, textures, texture_name);
+            }
+        }
     }
 }
 
@@ -1741,6 +1844,10 @@ void Clear() {
     {
         std::lock_guard lock(selected_models_mutex);
         selected_models.clear();
+    }
+    {
+        std::lock_guard lock(mesh_images_mutex);
+        mesh_images.clear();
     }
     inverse_binds.clear();
     native_channels.clear();
@@ -2262,7 +2369,27 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             identity_ms += since(identity_start);
             visual->texture_manager = &textures;
             auto step_start = timing_clock::now();
-            Mesh(*document, node, mesh, *visual, memory, textures);
+            // Mesh identities of documents read by path are cached, so their addresses are stable keys.
+            const bool                       reusable = !document->relative.empty();
+            std::shared_ptr<const MeshImage> image;
+            if (reusable) {
+                std::lock_guard lock(mesh_images_mutex);
+                if (const auto found = mesh_images.find(mesh_identity.get()); found != mesh_images.end()) {
+                    image = found->second.image;
+                }
+            }
+            MeshImage capture;
+            Mesh(*document, node, mesh, *visual, memory, textures, image.get(), reusable && !image ? &capture : nullptr);
+            if (reusable && !image) {
+                std::lock_guard lock(mesh_images_mutex);
+                mesh_images.insert_or_assign(mesh_identity.get(),
+                                             MeshImageEntry{.identity = mesh_identity, .image = std::make_shared<const MeshImage>(std::move(capture))});
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    CT_LOG_INFO(Data, "timing: converted meshes cached from now on");
+                }
+            }
             mesh_ms += since(step_start);
             ++mesh_count;
             vertex_count += visual->vertex_num;

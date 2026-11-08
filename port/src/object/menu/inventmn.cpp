@@ -2691,6 +2691,20 @@ void CMenuInvent::ExitEnd() {
 }
 
 void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
+    // Stutter diagnostic. Remove with the other timing logs.
+    auto       step_start = std::chrono::steady_clock::now();
+    double     background_images_ms = 0.0;
+    double     shared_images_ms = 0.0;
+    double     layout_ms = 0.0;
+    double     icons_ms = 0.0;
+    double     photos_ms = 0.0;
+    double     lists_ms = 0.0;
+    double     forms_ms = 0.0;
+    const auto lap = [&step_start]() {
+        const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
+        step_start = std::chrono::steady_clock::now();
+        return elapsed;
+    };
     const auto         pack_bytes = directory.Bytes();
     const u8          *pack = reinterpret_cast<const u8 *>(pack_bytes.data());
     mgCTextureManager *tex_manager = &mgTexManager;
@@ -2703,6 +2717,7 @@ void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
             tex_manager->EnterIMGFile(reinterpret_cast<u8 *>(file), image_block, nullptr, nullptr);
             Tex_Hatsumei = tex_manager->GetTexture("inv0", -1);
         }
+        background_images_ms = lap();
 
         file = AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "edmenu.json", nullptr);
 
@@ -2710,23 +2725,33 @@ void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
             tex_manager->EnterIMGFile(reinterpret_cast<u8 *>(file), MenuCommonInfo->tex_block[1], nullptr, nullptr);
             MenuPosData->AttachCommonTexInfo();
         }
+        shared_images_ms = lap();
 
         int size = 0;
         MenuDataAnalyze(reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "invent.cfg.json", &size)), size, &data_stack);
         MenuInventStack.Align64();
+        layout_ms = lap();
 
         icon_data[0].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[0].name);
         icon_data[1].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[1].name);
         icon_data[2].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[2].name);
+        icons_ms = lap();
         AttachPictTex(tex_block[3], photo_tex, InventUserDataPtr->GetPhotoInfo(0), INVENT_PHOTO_NUM);
+        photos_ms = lap();
         script = reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "inv_com.cfg.json", &script_size));
         int size2 = 0;
         InventManagePt->LoadAnalyzeInventFile(reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "inv6.lst", &size2)),
                                               size2);
+        lists_ms = lap();
     }
 
     AttachFormInfo();
     MenuMoveItemPtr->AttachForm();
+    forms_ms = lap();
+    CT_LOG_INFO(Menu,
+                "timing: make background pack: background images {:.1f}, shared menu images {:.1f}, layout {:.1f}, icons {:.1f}, "
+                "photos {:.1f}, invention lists {:.1f}, forms {:.1f}",
+                background_images_ms, shared_images_ms, layout_ms, icons_ms, photos_ms, lists_ms, forms_ms);
 }
 
 int CMenuInvent::ItemCmdAfter(int command, ITEMCMD_RET_PARA *para) {
