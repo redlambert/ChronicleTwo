@@ -6,12 +6,14 @@
 #include "platform/native_config.hpp"
 #include "memory/tracked_copy.hpp"
 #include "log/game_output.hpp"
+#include "log/log.hpp"
 // clang-format on
 
 #include "common.h"
 #include "mw_runtime.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -5960,7 +5962,18 @@ CMenuInvent::CMenuInvent() {
     Init_MENUFORM_MAKEBRD_INFO(&make_board);
 }
 
+namespace {
+// Stutter diagnostic for the Make screen. Remove with the other timing logs.
+double MakeTimingMs(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+} // namespace
+
 int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
+    const auto make_start = std::chrono::steady_clock::now();
+    double     make_background_ms = 0.0;
+    double     make_preview_start_ms = 0.0;
+    double     make_scripts_ms = 0.0;
     dc2::menu::ResetInventionMenu();
     if (memory == nullptr || !MenuInventStack.stShareStack(*memory)) {
         return 0;
@@ -6007,8 +6020,10 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     CMenuInventPt->data_stack.stSetChildBuffer(*stack, stack->Alloc(0x1310), 0x1310);
 
     if (CMenuInventPt->photo_only == 0) {
+        const auto background_start = std::chrono::steady_clock::now();
         const auto directory = dc2::menu::ReadMenuFile("inv2_bg.pac");
         CMenuInventPt->EnterDataMenu(directory);
+        make_background_ms = MakeTimingMs(background_start);
     }
 
     StartReadBG();
@@ -6044,7 +6059,10 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     MenuCharaLoadStack.stSetBorrowedBuffer(*stack, std::span(stack->stGetTop(), static_cast<std::size_t>(rest)));
     MenuCharaLoadStack.stClearUsed();
     MenuCharaLoadStack.stSetLocked(false);
+    const auto preview_start = std::chrono::steady_clock::now();
     CMenuInventPt->LoadCharaCheck();
+    make_preview_start_ms = MakeTimingMs(preview_start);
+    const auto scripts_start = std::chrono::steady_clock::now();
     CMenuPosDataForm *image_form = {};
 
     switch (CMenuInventPt->photo_only) {
@@ -6076,6 +6094,8 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
             break;
     }
 
+    make_scripts_ms = MakeTimingMs(scripts_start);
+    const auto tail_start = std::chrono::steady_clock::now();
     MenuCamInit(1.0f);
     itemmenu_chr_rotflag = true;
 
@@ -6107,6 +6127,9 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     InventInNetaEffectFlag = false;
     InitMenuDl(nullptr, 0);
     SetModeMenuDrawItemBoard(MENU_ITEM_BOARD_BAG);
+    CT_LOG_INFO(Menu,
+                "timing: make open {:.1f} ms: background pack {:.1f}, preview read start {:.1f}, page scripts {:.1f}, rest of setup {:.1f}",
+                MakeTimingMs(make_start), make_background_ms, make_preview_start_ms, make_scripts_ms, MakeTimingMs(tail_start));
     return 1;
 }
 
@@ -7472,7 +7495,10 @@ void CMenuInvent::LoadCharaCheck() {
         return;
     }
 
+    const auto preview_finish_start = std::chrono::steady_clock::now();
     MenuItemCharaDataLoadEndCheck(MenuCharaBuild2, nullptr, MenuActionChara, 0, tex_block[1], -1);
+    const double preview_build_ms = MakeTimingMs(preview_finish_start);
+    const auto   preview_rest_start = std::chrono::steady_clock::now();
     character->ResetParent();
     if (MenuActionChara[3] && MenuUserParam.chara[0]->equip[2].item_no > 0) {
         character->SetRef(MenuActionChara[3], "hat");
@@ -7510,6 +7536,8 @@ void CMenuInvent::LoadCharaCheck() {
     poly_chr_form[0]->SetActionCharaPtr(character, tex_block[1], -1);
     unk_642 = unk_640 = 0;
     unk_648 = -std::numbers::pi_v<float> / 5.0f;
+    CT_LOG_INFO(Menu, "timing: make preview finish {:.1f} ms: build {:.1f}, pose and scripts {:.1f}",
+                MakeTimingMs(preview_finish_start), preview_build_ms, MakeTimingMs(preview_rest_start));
 }
 
 namespace {

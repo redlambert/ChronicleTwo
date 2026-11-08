@@ -162,6 +162,7 @@ struct Document : std::enable_shared_from_this<Document> {
     mutable std::unordered_map<std::size_t, std::string>                      embedded_keys;         /**< Content identities of embedded images by standard image index. */
     std::shared_ptr<const std::vector<bool>>                                  scaled_nodes;          /**< Standard nodes some animation scales to other than one, once computed. */
     std::optional<std::size_t>                                                model_index;           /**< Bundle model SelectModel chose, or none for the bundle itself. */
+    std::vector<std::shared_ptr<texture_catalog::Source>>                     retired_texture_sets;  /**< Image sets replaced in texture_sets, kept alive for textures entered from them. */
 
     explicit Document(std::shared_ptr<fastgltf::Asset> input) : storage(std::move(input)), asset(*storage) {}
 };
@@ -431,7 +432,7 @@ std::shared_ptr<Document> Derive(const Document &source) {
 /**
  * Selects one model scene and its adjacent native semantics.
  */
-std::shared_ptr<Document> SelectModel(const std::shared_ptr<Document> &source, std::optional<std::size_t> index) {
+std::shared_ptr<Document> SelectModelUncached(const std::shared_ptr<Document> &source, std::optional<std::size_t> index) {
     auto selected = Derive(*source);
     selected->model_index = index;
     if (!index && source->custom->contains("models") && source->custom->at("models").empty()) {
@@ -457,6 +458,53 @@ std::shared_ptr<Document> SelectModel(const std::shared_ptr<Document> &source, s
     for (const auto &[node, frame] : rotation_nodes.items()) {
         selected->rotation_nodes.insert_or_assign(static_cast<std::size_t>(std::stoull(node)), ModelInteger<std::size_t>(frame));
     }
+    return selected;
+}
+
+/**
+ * A selected model, kept with the document it was selected from so that document cannot be freed and replaced by
+ * another at the same address while the entry lives.
+ */
+struct SelectedModelEntry {
+    std::shared_ptr<Document> source;
+    std::shared_ptr<Document> selected;
+};
+
+std::map<std::pair<const Document *, std::optional<std::size_t>>, SelectedModelEntry> selected_models;
+std::mutex                                                                         selected_models_mutex;
+
+/**
+ * Cached front for SelectModelUncached. Selecting copies the model's whole gameplay metadata, and a skin builds its
+ * scene and its bind pose from separate selections, so Max's outfit copied it twice on every menu open. Nothing
+ * edits a selected document's metadata afterward; its other members are caches that are safe to share. Only
+ * documents read by path are reused (Read keeps them until Clear); one parsed from bytes is new every time.
+ */
+std::shared_ptr<Document> SelectModel(const std::shared_ptr<Document> &source, std::optional<std::size_t> index) {
+    if (source->relative.empty()) {
+        return SelectModelUncached(source, index);
+    }
+
+    const std::pair<const Document *, std::optional<std::size_t>> key{source.get(), index};
+    {
+        std::lock_guard lock(selected_models_mutex);
+
+        if (const auto found = selected_models.find(key); found != selected_models.end()) {
+            return found->second.selected;
+        }
+    }
+
+    auto selected = SelectModelUncached(source, index);
+    {
+        std::lock_guard lock(selected_models_mutex);
+        selected_models.insert_or_assign(key, SelectedModelEntry{.source = source, .selected = selected});
+        static bool logged = false;
+
+        if (!logged) {
+            logged = true;
+            CT_LOG_INFO(Data, "timing: selected models cached from now on");
+        }
+    }
+
     return selected;
 }
 
@@ -1270,7 +1318,12 @@ mgCTexture *Image(Document &document, std::size_t texture_index, mgCMemory &memo
     entry.bpp = 32;
     entry.variants.push_back({.selector = "", .levels = {}});
     source->entries.push_back(std::move(entry));
-    document.texture_sets[(std::size_t{1} << 30) + texture_index] = source;
+    // A selected document is shared between loads, so an earlier load's set may still back an entered texture.
+    auto &slot = document.texture_sets[(std::size_t{1} << 30) + texture_index];
+    if (slot) {
+        document.retired_texture_sets.push_back(std::move(slot));
+    }
+    slot = source;
     const auto image = *texture.imageIndex;
     MgTextureEnterNativeSet(
         &textures, 0, *source, &memory,
@@ -1684,6 +1737,10 @@ void Clear() {
     {
         std::lock_guard lock(mesh_identity_cache_mutex);
         mesh_identity_cache.clear();
+    }
+    {
+        std::lock_guard lock(selected_models_mutex);
+        selected_models.clear();
     }
     inverse_binds.clear();
     native_channels.clear();
