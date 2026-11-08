@@ -6,10 +6,8 @@ local wait_frames = require("@lib/event/wait_frames")
 
 --- Helper function.
 local function helper_113adf71(arg0: any)
-	-- Test: prove this file ran, then move the camera 10 units toward Max and Cedric.
-	print("helper_113adf71: camera test ran\n")
-	event.set_character_active(0, 36)
-	event.set_object_handle_visible(5, 0)
+	-- Port fix: the original camera spot (51.28, 21.78, -97.62) sits against shop geometry that the port draws and
+	-- the PS2 did not, which blacks out the shot. Moved 10 units along the same line of sight toward Max and Cedric.
 	event.set_camera_sequence_position(51.03, 21.36, -107.62)
 	event.set_camera_sequence_look_at(50.16, 19.92, -141.52)
 	event.set_object_sequence_position(0, 58.4, -0.02, -135.54)
