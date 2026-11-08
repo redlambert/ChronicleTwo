@@ -2035,6 +2035,19 @@ bool StandardScaleOrder(Document &document, const fastgltf::Node &node) {
 
 mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &load, std::string &error) {
     CT_PROFILE_ZONE("Instantiate model");
+    // Stutter diagnostic: splits a model build into its steps. Remove with the other timing logs.
+    using timing_clock = std::chrono::steady_clock;
+    const auto instantiate_start = timing_clock::now();
+    double     mesh_ms = 0.0;
+    double     skin_ms = 0.0;
+    double     bounds_ms = 0.0;
+    double     faces_ms = 0.0;
+    double     publish_ms = 0.0;
+    int        mesh_count = 0;
+    long long  vertex_count = 0;
+    const auto since = [](timing_clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(timing_clock::now() - start).count();
+    };
     try {
         const auto &frames = document->metadata.at("frames");
         if (frames.empty() || (document->frame_nodes.empty() && document->asset.nodes.size() < document->node_offset + frames.size())) {
@@ -2121,14 +2134,21 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             }
             auto [visual, clone_kind] = Visual(memory, type);
             visual->texture_manager = &textures;
+            auto step_start = timing_clock::now();
             Mesh(*document, node, mesh, *visual, memory, textures);
+            mesh_ms += since(step_start);
+            ++mesh_count;
+            vertex_count += visual->vertex_num;
             if (type == MG_VISUAL_CREATE_MOTION_MDT) {
                 auto *motion = static_cast<mgCVisualMotionMDT *>(visual);
                 motion->frame = table;
                 motion->frame_id = static_cast<int>(index);
                 motion->base_matrix = matrices;
+                step_start = timing_clock::now();
                 Skin(*document, node, mesh, *motion, memory);
+                skin_ms += since(step_start);
             }
+            step_start = timing_clock::now();
             native[index].SetVisual(visual);
             float maximum[4];
             float minimum[4];
@@ -2148,13 +2168,18 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             if (type == MG_VISUAL_CREATE_MOTION_MDT) {
                 static_cast<mgCVisualMotionMDT *>(visual)->SetBaseBox(maximum, minimum);
             }
+            bounds_ms += since(step_start);
+            step_start = timing_clock::now();
             if (type == MG_VISUAL_CREATE_SHADOW_MDT || type == MG_VISUAL_CREATE_SHADOW_FIX_MDT) {
                 ShadowFaces(*visual);
             }
             RefreshFaces(*visual);
+            faces_ms += since(step_start);
+            step_start = timing_clock::now();
             if (!dc2::render::VisualCloneInputs::Publish(memory, *visual, clone_kind)) {
                 throw std::runtime_error("invalid visual clone inputs");
             }
+            publish_ms += since(step_start);
         }
         for (std::size_t index = 0; index < frames.size(); ++index) {
             auto &frame = native[index];
@@ -2190,6 +2215,13 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             native[index].GetLWMatrix(matrices[index]);
         }
         mgSetFrameAttr(native, 1);
+        if (const double total_ms = since(instantiate_start); total_ms >= 10.0) {
+            CT_LOG_INFO(Data,
+                        "timing: instantiate {} total {:.1f} ms: {} frames, {} meshes, {} vertices, mesh {:.1f}, skin {:.1f}, "
+                        "bounds {:.1f}, faces {:.1f}, publish {:.1f}, rest {:.1f}",
+                        document->relative.generic_string(), total_ms, frames.size(), mesh_count, vertex_count, mesh_ms, skin_ms,
+                        bounds_ms, faces_ms, publish_ms, total_ms - mesh_ms - skin_ms - bounds_ms - faces_ms - publish_ms);
+        }
         error.clear();
         return native;
     } catch (const std::exception &exception) {

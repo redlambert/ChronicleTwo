@@ -3,6 +3,7 @@
 // Load JSON before legacy game headers define conflicting macros.
 #include "platform/native_config.hpp"
 #include "log/game_output.hpp"
+#include "log/log.hpp"
 // clang-format on
 
 #include "common.h"
@@ -772,11 +773,29 @@ void Trans3DPosTo2DPos(mgCCamera *camera, mgCFrame *frame, int *out) {
         return;
     }
 
+    // Retail left this camera's view in place for the rest of the frame. The Item page's widescreen
+    // layout draws the weapon through a view moved sideways with its panel (menuworld::ViewThroughMenuCamera),
+    // so the previous view is put back once the point is projected. Otherwise the weapon jumps back to its 4:3
+    // spot while synthesis sparkles still fly to where it was.
+    sceVu0FMATRIX previous_view;
+    sceVu0FVECTOR previous_pos;
+    sceVu0CopyMatrix(previous_view, mgRenderInfo.view);
+    sceVu0CopyVector(previous_pos, mgRenderInfo.camera_pos);
+
     camera->GetCameraMatrix(view);
     camera->GetPos(camera_pos);
     mgSetViewMatrix(view, camera_pos);
     frame->GetPosition(frame_pos);
     mgTransWorldScreen(out, frame_pos);
+
+    mgSetViewMatrix(previous_view, previous_pos);
+
+    static bool logged = false;
+
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "synthesis sparkles: weapon keeps the Item page's shifted view");
+    }
 }
 
 /**

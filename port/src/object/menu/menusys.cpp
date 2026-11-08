@@ -12482,9 +12482,43 @@ void MenuItemDrawCore() {
             MenuEffect[1]->Draw();
             mgCTextureManager *tex_manager = &mgTexManager;
 
+            // Diagnostic: why the build-up flash is not visible. Remove once fixed.
+            static int build_up_draw_count = 0;
+
             if (CMenuItemInfoPt->build_up_chara != nullptr) {
+                CActionChara *flash = CMenuItemInfoPt->build_up_chara;
+
+                if (build_up_draw_count % 4 == 0) {
+                    mgCFrame *root = flash->CObjectFrame::frame;
+                    int       frames = root != nullptr ? root->frame_num : -1;
+                    int       visuals = 0;
+
+                    for (int i = 0; root != nullptr && i < root->frame_num; ++i) {
+                        mgCFrame *part = root->GetFrame(i);
+
+                        if (part != nullptr && part->visual != nullptr) {
+                            ++visuals;
+                        }
+                    }
+
+                    float where[4];
+                    int   screen[4] = {};
+                    flash->GetPosition(where);
+                    mgTransWorldScreen(screen, where);
+                    CT_LOG_INFO(Menu,
+                                "build-up flash draw {}: motion frame {:.1f}, show {} draw_off {} alpha {:.2f} fade {} "
+                                "fade_alpha {:.2f}, camera dist {:.1f}, frames {} with visuals {}, pos ({:.1f}, {:.1f}, {:.1f}), "
+                                "screen ({}, {}), tex block {}",
+                                build_up_draw_count, flash->GetNowFrame(nullptr), flash->show, flash->draw_off, flash->alpha,
+                                flash->fade, flash->fade_alpha, flash->GetCameraDist(), frames, visuals, where[0], where[1],
+                                where[2], screen[0] >> 4, screen[1] >> 4, CMenuItemInfoPt->tex_block[2]);
+                }
+
+                ++build_up_draw_count;
                 tex_manager->ReloadTexture(CMenuItemInfoPt->tex_block[2], (sceVif1Packet *) nullptr);
                 CMenuItemInfoPt->build_up_chara->DrawDirect();
+            } else {
+                build_up_draw_count = 0;
             }
 
             MenuRepairMan->Draw();
