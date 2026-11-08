@@ -240,17 +240,6 @@ static int IntroHelpMesFlag;
 
 /**
  *
- * Whether the train fight is looping.
- *
- */
-static bool BuggyLoopRunning;
-
-bool PortBuggyPlaying() {
-    return BuggyLoopRunning && IntroHelpMesFlag == 0;
-}
-
-/**
- *
  * Current bomb interaction state of the player.
  *
  */
@@ -596,7 +585,6 @@ int sgInitBuggy(SubGameInfo *info) {
 }
 
 int sgExitBuggy(SubGameInfo *info) {
-    BuggyLoopRunning = false;
     CScene            *scene = {};
     mgCTextureManager *tm = {};
     int                i = {};
@@ -627,7 +615,6 @@ int sgExitBuggy(SubGameInfo *info) {
 }
 
 int sgLoopBuggy(SubGameInfo *info) {
-    BuggyLoopRunning = true;
     CScene      *scene = info->scene;
     ClsMes      *message = {};
     CPadControl *pad = &PadCtrl;

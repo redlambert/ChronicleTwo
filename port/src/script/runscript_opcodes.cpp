@@ -2932,8 +2932,7 @@ int _GET_RANGE_MONS_ID(dc2::script::RunArguments stack, int argc) {
         }
     }
 
-    // Retail reads its stack here when a script asks for more monsters than there are slots.
-    SetStack(stack, rank >= 0 && rank < 24 ? entries[rank].id : -1);
+    SetStack(stack, entries[rank].id);
     return 1;
 }
 

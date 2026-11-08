@@ -59,7 +59,6 @@
 #include "savedatadungeon.hpp"
 #include "sceneevent.hpp"
 #include "scenesnd.hpp"
-#include "screeneffect.hpp"
 #include "scriptinterpreter.hpp"
 #include "snd_mngr.hpp"
 #include "snd_seseq.hpp"
@@ -1803,7 +1802,7 @@ void AutoSetTreasureBox() {
 void CreatMonsterFloorInfo(char *script, int length);
 
 void AutoSetMonster() {
-    if (dc2::debug::RosterStressPlaceMonsters() || dc2::debug::DungeonStressPlaceMonsters()) {
+    if (dc2::debug::DungeonStressPlaceMonsters()) {
         return;
     }
     float           event_point[4];
@@ -1896,7 +1895,6 @@ void DungeonFloorFinish() {
 }
 
 void LoadDungeonMapFile(char *map_name, char *cfg_name, int gen_flag) {
-    PrewarmLensFlareTargets();
     mgCMemory           *stack = {};
     u_long128           *image = {};
     mgCTextureManager   *textures = {};
@@ -2256,7 +2254,6 @@ void LoadMonsterFile() {
             ActiveMonster->EntryRefer(id, memory);
         }
     }
-    dc2::debug::RosterStressLoadMonsters(memory);
 }
 
 void LoadMonsterFile(int monster_id, int initialize) {
