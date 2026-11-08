@@ -416,6 +416,13 @@ void TitleLangSelDraw();
 
 /**
  *
+ * Sets the language the title boot applies, as the language menu would; 1 is English through 5, Spanish.
+ *
+ */
+void SetSelectLanguageNo(int language);
+
+/**
+ *
  * Title menu row chosen on entering the title screen; set to
  * TITLE_MENU_CONTINUE when a memory card holds a save file.
  *

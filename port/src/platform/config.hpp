@@ -43,6 +43,8 @@ inline constexpr bool kConfigInterpolationDefault = true;
 
 /** Most extra shots game.spheda_handicap adds to a Spheda hole's par. */
 inline constexpr int kSphedaHandicapMax = 5;
+// game.language's highest value, Spanish.
+inline constexpr int kConfigLanguageMax = 5;
 
 struct Config : HostSettings {
     bool               interpolation = kConfigInterpolationDefault;
@@ -53,6 +55,9 @@ struct Config : HostSettings {
     bool quick_loadout_plate = false;
     // game.skip_intro: boots past the Sony Computer Entertainment text, the copyright notice and the Level-5 logo.
     bool skip_intro = false;
+    // game.language: 0 asks with the language menu at every boot; 1 to 5 starts in English, French, German, Italian
+    // or Spanish without asking. Choosing on the menu stores the choice here.
+    int language = 0;
     // game.auto_use_event_item: an event that asks for one item the bag holds is handed it without the item picker.
     bool auto_use_event_item = false;
     // game.spheda_handicap: extra shots, 0 to 5, added to every Spheda hole's par as it is laid out.

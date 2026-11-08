@@ -655,17 +655,27 @@ void SCElogoFade(int fade_out, mgCMemory *memory) {
     void *image = memory->stGetTop();
 
     if (!fade_out) {
-        GamePad__2.WaitEnable();
-        GamePad__2.UpDate();
-        TitleLangSelInit(memory);
+        language = PortSavedLanguage();
 
-        do {
-            mgBeginFrame(nullptr);
-            language = TitleLangSelKey();
-            TitleLangSelDraw();
+        if (language > 0) {
+            // A language stored in game.language skips the menu; leave the state the menu would have left.
+            SetSelectLanguageNo(language);
+            mgFrameRate = 2;
+        } else {
+            GamePad__2.WaitEnable();
             GamePad__2.UpDate();
-            mgEndFrame(nullptr);
-        } while (!(0 < language));
+            TitleLangSelInit(memory);
+
+            do {
+                mgBeginFrame(nullptr);
+                language = TitleLangSelKey();
+                TitleLangSelDraw();
+                GamePad__2.UpDate();
+                mgEndFrame(nullptr);
+            } while (!(0 < language));
+
+            PortRememberLanguage(language);
+        }
 
         LanguageCode = language;
         char path[0x80];
@@ -742,3 +752,11 @@ void NowLoadingBarSteEnd() {
 }
 
 bool PortSkipIntro() { return ConfigGet().skip_intro; }
+
+int PortSavedLanguage() { return ConfigGet().language; }
+
+void PortRememberLanguage(int language) {
+    Config config = ConfigGet();
+    config.language = language;
+    ConfigChange(config);
+}

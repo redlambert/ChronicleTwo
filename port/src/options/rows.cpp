@@ -362,6 +362,7 @@ std::vector<Page> MakePages() {
         {.name = "Game",     .rows = {
                              Choice<&Config::autosave>("game.autosave", "Autosave", "Saves on arriving in a town or on a dungeon floor.\nThe load screen lists it first.", {"Off", "On"}),
                              Choice<&Config::quick_loadout_plate>("game.quick_loadout_title", "Quick loadout title", "How the D-pad down panel shows its title:\non a bar, or on a plate like the EXP gauge's.", {"Bar", "Plate"}),
+                             Choice<&Config::language>("game.language", "Language", "Ask shows the language menu at every boot.\nApplies at the next launch.", {"Ask", "English", "French", "German", "Italian", "Spanish"}),
                              Choice<&Config::skip_intro>("game.skip_intro", "Skip intro", "Boots past the Sony text, the copyright notice\nand the Level-5 logo to the title screen.", {"Off", "On"}),
                              Choice<&Config::auto_use_event_item>("game.auto_use_event_item", "Auto-use event items", "An event that asks for one item you carry\nis handed it without the item picker.", {"Off", "On"}),
                              Choice<&Config::spheda_handicap>("game.spheda_handicap", "Spheda handicap", "Extra shots added to each Spheda hole's par.\nOff is the original game.", {"Off", "+1", "+2", "+3", "+4", "+5"}),

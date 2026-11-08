@@ -228,6 +228,17 @@ TEST_F(PlatformConfig, RenderThreadDefaultsToAsyncAndRoundTrips) {
     ASSERT_TRUE(parsed == config);
 }
 
+TEST_F(PlatformConfig, LanguageDefaultsToAskAndRoundTrips) {
+    ASSERT_EQ(Config{}.language, 0);
+    ASSERT_EQ(ConfigParse(R"({"game": {"language": 6}})").language, 0);
+    ASSERT_EQ(ConfigParse(R"({"game": {"language": -1}})").language, 0);
+    Config config;
+    config.language = 3;
+    const Config parsed = ConfigParse(ConfigSerialize(config));
+    ASSERT_EQ(parsed.language, 3);
+    ASSERT_TRUE(parsed == config);
+}
+
 TEST_F(PlatformConfig, SkipIntroDefaultsToOffAndRoundTrips) {
     ASSERT_FALSE(Config{}.skip_intro);
     ASSERT_FALSE(ConfigParse(R"({"game": {"skip_intro": "yes"}})").skip_intro);

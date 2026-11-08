@@ -710,6 +710,7 @@ Writes are atomic: the file is written as `config.json.tmp` and renamed over `co
 | `game.quick_loadout_title` | string | bar | bar, plate | the quick loadout panel's title on a bar, or on a plate like the EXP gauge's; see [QUICK_LOADOUT.md](QUICK_LOADOUT.md) |
 | `game.auto_use_event_item` | bool | false | | an event that asks for one item the bag holds is handed it without the item picker; see "Auto-use event items" |
 | `game.spheda_handicap` | int | 0 | 0 to 5 | extra shots added to each Spheda hole's par as it is laid out; see "Spheda handicap" |
+| `game.language` | int | 0 | 0 to 5 | 0 shows the language menu at every boot; 1 to 5 start in English, French, German, Italian or Spanish without asking. Choosing on the menu stores the choice |
 | `game.skip_intro` | bool | false | | boot past the Sony Computer Entertainment text, the copyright notice and the Level-5 logo to the title screen |
 | `game.floor_info_monsters` | bool | false | | Triangle on a dungeon floor's information lists its monsters (spoilers); see "Floor monster list" |
 | `game.more_monsters` | bool | false | | a dungeon floor holds up to 60 monsters instead of 24, and every monster in range shows and acts; see "Dungeon monster limit" |

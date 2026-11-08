@@ -55,6 +55,7 @@ TEST(PcOptions, RequestedSettingsHaveUniqueRowsAndRoundTripTheirEdits) {
         "input.glyph_device",
         "game.autosave",
         "game.quick_loadout_title",
+        "game.language",
         "game.skip_intro",
         "game.auto_use_event_item",
         "game.spheda_handicap",
