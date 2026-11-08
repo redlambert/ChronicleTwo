@@ -2861,6 +2861,7 @@ bool CCharacter2::Copy(CCharacter2 &dest, mgCMemory *memory) try {
 #include "log/log.hpp"
 #include "mg_texture.hpp"
 #include "mglib.hpp"
+#include "platform/frame_timing.hpp"
 #include "platform/model_assets.hpp"
 
 void CCharacter2::LoadChrFile(u32 *data, const char *profile, mgCMemory *model,
@@ -2872,7 +2873,12 @@ void CCharacter2::LoadChrFile(u32 *data, const char *profile, mgCMemory *model,
         CT_LOG_ERROR(Data, "character: direct glTF path required");
         return;
     }
+    const auto start = std::chrono::steady_clock::now();
     const bool loaded = model_assets::LoadCharacter(*this, std::filesystem::path(*path), profile ? profile : "", options, error);
+    const double ms = dc2::frame_timing::ElapsedMs(start);
+    dc2::frame_timing::frame_character_ms += ms;
+    dc2::frame_timing::frame_characters += 1;
+    CT_LOG_INFO(Data, "timing: character {} built in {:.1f} ms", *path, ms);
     if (!loaded) {
         CT_LOG_ERROR(Data, "character: {}", error);
     }
@@ -2886,7 +2892,12 @@ void CCharacter2::LoadSkin(u32 *data, char *profile, char *name, mgCMemory *memo
         CT_LOG_ERROR(Data, "character skin: direct glTF path required");
         return;
     }
+    const auto start = std::chrono::steady_clock::now();
     const bool loaded = model_assets::LoadSkin(*this, std::filesystem::path(*path), profile ? profile : "", name ? name : "", options, error);
+    const double ms = dc2::frame_timing::ElapsedMs(start);
+    dc2::frame_timing::frame_character_ms += ms;
+    dc2::frame_timing::frame_characters += 1;
+    CT_LOG_INFO(Data, "timing: skin {} built in {:.1f} ms", *path, ms);
     if (!loaded) {
         CT_LOG_ERROR(Data, "character skin: {}", error);
     }

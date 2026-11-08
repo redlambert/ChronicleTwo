@@ -1364,6 +1364,7 @@ ClsMes PauseMes;
 #include "item_icon3d.hpp"
 #include "log/log.hpp"
 #include "main.hpp"
+#include "platform/frame_timing.hpp"
 #include "mainloop.hpp"
 #include "mainloop3.hpp"
 #include "mapjump.hpp"
@@ -1846,7 +1847,23 @@ void MainLoop() {
             GameDebugFrame(PortLoopNo);
             const int tick_frame = mgPortFrameCount();
             mgBeginFrame(nullptr);
+            {
+                static bool timing_announced = false;
+                if (!timing_announced) {
+                    timing_announced = true;
+                    CT_LOG_INFO(Main, "timing: stutter logs on (slow frames over 25 ms are reported)");
+                }
+            }
+            dc2::frame_timing::ResetFrame();
+            const auto loop_start = std::chrono::steady_clock::now();
             mode_finished = LoopMain[PortLoopNo]();
+            if (const double loop_ms = dc2::frame_timing::ElapsedMs(loop_start); loop_ms >= 25.0) {
+                CT_LOG_INFO(Main,
+                            "timing: slow frame {} in loop {}: {:.1f} ms, {} file reads {:.1f} ms, {} character builds {:.1f} ms",
+                            tick_frame, static_cast<int>(PortLoopNo), loop_ms, dc2::frame_timing::frame_files,
+                            dc2::frame_timing::frame_file_ms, dc2::frame_timing::frame_characters,
+                            dc2::frame_timing::frame_character_ms);
+            }
             PortFinishQuickChange();
             sndStep(mgGetNowFrameRate());
             MainScene.StepSnd();
