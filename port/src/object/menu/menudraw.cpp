@@ -3166,9 +3166,18 @@ static void DrawItemIconEffect2(mgCDrawPrim *prim, mgCTexture *tex, MENUFORMPART
     float                      dy = {};
 
     if (part != nullptr && part->effect != nullptr) {
+        static bool logged = false;
+
+        if (!logged) {
+            logged = true;
+            CT_LOG_INFO(Menu, "spectrum sparkles: drawing with the flat corner table");
+        }
+
         effect = &part->effect[2];
         mgRect<float> star_rect;
-        float         corners[4][2];
+        // One flat array of four x, y pairs. Retail indexed a [4][2] array as corners[0][n] with n up to 7, which
+        // compilers may assume never happens: on Switch the corner loop lost its end and read past the stack.
+        float         corners[8];
         int           uv[8];
         star_rect.left = rect.left;
         star_rect.top = rect.top;
@@ -3183,7 +3192,7 @@ static void DrawItemIconEffect2(mgCDrawPrim *prim, mgCTexture *tex, MENUFORMPART
             if (!(effect->param[0] <= 0.0f)) {
                 star_rect.left = rect.left + effect->param[2];
                 star_rect.top = rect.top + effect->param[3];
-                ConvMGFRECTtoFLOATtbl(star_rect, corners[0]);
+                ConvMGFRECTtoFLOATtbl(star_rect, corners);
                 center_x = 4.0f + star_rect.left;
                 center_y = 4.0f + star_rect.top;
                 scale = effect->param[5];
@@ -3195,13 +3204,13 @@ static void DrawItemIconEffect2(mgCDrawPrim *prim, mgCTexture *tex, MENUFORMPART
                 prim->Color(color[0], color[1], color[2], alpha);
 
                 for (k = 0; k < 4; k++) {
-                    dx = scale * (static_cast<float>(center_x) - corners[k][0]);
-                    dy = scale * (static_cast<float>(center_y) - corners[k][1]);
-                    corners[k][0] = center_x + dx * cos_angle - dy * sin_angle;
-                    corners[k][1] = center_y + dx * sin_angle + dy * cos_angle;
                     n = k * 2;
+                    dx = scale * (static_cast<float>(center_x) - corners[n]);
+                    dy = scale * (static_cast<float>(center_y) - corners[n + 1]);
+                    corners[n] = center_x + dx * cos_angle - dy * sin_angle;
+                    corners[n + 1] = center_y + dx * sin_angle + dy * cos_angle;
                     prim->TextureCrd(uv[n], uv[n + 1]);
-                    prim->Vertex(static_cast<int>(corners[0][n]), static_cast<int>(corners[0][n + 1]), 0);
+                    prim->Vertex(static_cast<int>(corners[n]), static_cast<int>(corners[n + 1]), 0);
                 }
 
                 prim->Flush();
