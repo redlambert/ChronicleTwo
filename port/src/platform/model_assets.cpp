@@ -2043,6 +2043,11 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
     double     bounds_ms = 0.0;
     double     faces_ms = 0.0;
     double     publish_ms = 0.0;
+    double     identity_ms = 0.0;
+    double     frames_ms = 0.0;
+    double     hierarchy_ms = 0.0;
+    double     matrices_ms = 0.0;
+    double     attrs_ms = 0.0;
     int        mesh_count = 0;
     long long  vertex_count = 0;
     const auto since = [](timing_clock::time_point start) {
@@ -2062,6 +2067,7 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             table[index] = native + index;
         }
         for (std::size_t index = 0; index < frames.size(); ++index) {
+            const auto frame_start = timing_clock::now();
             const auto &detail = frames.at(index);
             if (detail.value("id", index) != index) {
                 throw std::runtime_error("noncontiguous frame identities");
@@ -2124,15 +2130,18 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             if (!node.visible || !logical.visible) {
                 native[index].attr->draw = MG_FRAME_DRAW_SKIP_CHILDREN;
             }
+            frames_ms += since(frame_start);
             if (!node.meshIndex) {
                 continue;
             }
+            const auto identity_start = timing_clock::now();
             const auto mesh = MeshIdentity(*document, node, document->metadata.at("meshes").at(ModelInteger<std::size_t>(detail.at("mdt"))));
             int        type = VisualType(load.visual_type, name);
             if (type == MG_VISUAL_CREATE_MOTION_MDT && !node.skinIndex) {
                 type = MG_VISUAL_CREATE_FIX_MDT;
             }
             auto [visual, clone_kind] = Visual(memory, type);
+            identity_ms += since(identity_start);
             visual->texture_manager = &textures;
             auto step_start = timing_clock::now();
             Mesh(*document, node, mesh, *visual, memory, textures);
@@ -2187,6 +2196,7 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 throw std::runtime_error("invalid frame clone inputs");
             }
         }
+        auto tail_start = timing_clock::now();
         std::vector<int> parents(frames.size(), -1);
         for (std::size_t index = 0; index < frames.size(); ++index) {
             for (const auto child : ContentNode(*document, index).children) {
@@ -2208,19 +2218,27 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 native[index].SetParent(native + parents[index]);
             }
         }
+        hierarchy_ms += since(tail_start);
+        tail_start = timing_clock::now();
         native->frame_list = table;
         native->frame_num = static_cast<int>(frames.size());
         native->init_matrix = matrices;
         for (std::size_t index = 0; index < frames.size(); ++index) {
             native[index].GetLWMatrix(matrices[index]);
         }
+        matrices_ms += since(tail_start);
+        tail_start = timing_clock::now();
         mgSetFrameAttr(native, 1);
+        attrs_ms += since(tail_start);
         if (const double total_ms = since(instantiate_start); total_ms >= 10.0) {
             CT_LOG_INFO(Data,
                         "timing: instantiate {} total {:.1f} ms: {} frames, {} meshes, {} vertices, mesh {:.1f}, skin {:.1f}, "
-                        "bounds {:.1f}, faces {:.1f}, publish {:.1f}, rest {:.1f}",
+                        "bounds {:.1f}, faces {:.1f}, publish {:.1f}, frame setup {:.1f}, mesh metadata {:.1f}, hierarchy {:.1f}, "
+                        "matrices {:.1f}, attributes {:.1f}, rest {:.1f}",
                         document->relative.generic_string(), total_ms, frames.size(), mesh_count, vertex_count, mesh_ms, skin_ms,
-                        bounds_ms, faces_ms, publish_ms, total_ms - mesh_ms - skin_ms - bounds_ms - faces_ms - publish_ms);
+                        bounds_ms, faces_ms, publish_ms, frames_ms, identity_ms, hierarchy_ms, matrices_ms, attrs_ms,
+                        total_ms - mesh_ms - skin_ms - bounds_ms - faces_ms - publish_ms - frames_ms - identity_ms - hierarchy_ms -
+                            matrices_ms - attrs_ms);
         }
         error.clear();
         return native;
