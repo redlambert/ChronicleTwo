@@ -2967,8 +2967,50 @@ Json OriginalMotionName(const Json &custom, const Json &argument) {
 /**
  * Applies an ordered gameplay profile to native frames and gameplay records.
  */
+/**
+ * Temporary stutter diagnostics: adds up the time each build stage takes and logs one line per build.
+ */
+struct BuildStageTimes {
+    std::string                                         label;
+    std::vector<std::pair<std::string, double>>         stages;
+    std::chrono::steady_clock::time_point               start = std::chrono::steady_clock::now();
+
+    void Add(std::string_view stage, double ms) {
+        for (auto &[name, total] : stages) {
+            if (name == stage) {
+                total += ms;
+                return;
+            }
+        }
+        stages.emplace_back(std::string(stage), ms);
+    }
+
+    ~BuildStageTimes() {
+        const auto total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        std::string line;
+        for (const auto &[name, ms] : stages) {
+            line += std::format(" {} {:.1f}", name, ms);
+        }
+        CT_LOG_INFO(Data, "timing: stages {} total {:.1f} ms:{}", label, total, line);
+    }
+};
+
+/**
+ * Times one stage of a build and adds it to the build's totals when the scope ends.
+ */
+struct BuildStageScope {
+    BuildStageTimes                       &times;
+    std::string_view                       stage;
+    std::chrono::steady_clock::time_point  start = std::chrono::steady_clock::now();
+
+    ~BuildStageScope() {
+        times.Add(stage, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    }
+};
+
 void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &document, std::string_view profile,
                       std::string_view skin_name, const CharacterLoadOptions &options, bool skin) {
+    BuildStageTimes stage_times{.label = (skin ? "skin " : "character ") + document->relative.generic_string(), .stages = {}};
     if (!options.model_memory) {
         throw std::runtime_error("character model arena required");
     }
@@ -3033,6 +3075,7 @@ void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &d
         if (skin && tag_name != "MODEL" && tag_name != "MOTION" && tag_name != "IMG" && tag_name != "IMG_END") {
             continue;
         }
+        BuildStageScope stage_scope{.times = stage_times, .stage = tag_name, .start = std::chrono::steady_clock::now()};
         const auto                        &args = command.at("args");
         std::vector<std::string>           strings;
         auto                               stack = Arguments(args, strings);
@@ -3092,9 +3135,13 @@ void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &d
                 if (!selected_model || !character.CObjectFrame::frame) {
                     continue;
                 }
+                auto           scene_start = std::chrono::steady_clock::now();
                 auto          *replacement = Scene(document, *selected_model, options, PortCharacterMetadataVisualTypes(true), &character);
+                stage_times.Add("skin.scene", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scene_start).count());
                 tagMOTION_TYPE replacement_motion{};
+                const auto     bind_start = std::chrono::steady_clock::now();
                 BuildMotion(document, replacement_motion, memory, std::nullopt, bind, weights, selected_model);
+                stage_times.Add("skin.bindpose", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bind_start).count());
                 auto *root = character.CObjectFrame::frame;
                 Rebind(*replacement, *root, replacement_motion.base_matrices);
                 for (int index = 0; index < replacement->frame_num; ++index) {
@@ -3609,7 +3656,11 @@ bool LoadTextureSet(const std::filesystem::path &gltf, std::size_t index, mgCTex
 
 bool LoadCharacter(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, const CharacterLoadOptions &options, std::string &error) {
     return Attempt(error, [&] {
-        CharacterProfile(character, Read(gltf), profile, {}, options, false);
+        const auto read_start = std::chrono::steady_clock::now();
+        auto       document = Read(gltf);
+        CT_LOG_INFO(Data, "timing: lookup {} in {:.1f} ms", gltf.generic_string(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read_start).count());
+        CharacterProfile(character, document, profile, {}, options, false);
     });
 }
 
@@ -3621,7 +3672,11 @@ bool LoadCharacter(CCharacter2 &character, std::span<const std::byte> gltf, cons
 
 bool LoadSkin(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, std::string_view name, const CharacterLoadOptions &options, std::string &error) {
     return Attempt(error, [&] {
-        CharacterProfile(character, Read(gltf), profile, name, options, true);
+        const auto read_start = std::chrono::steady_clock::now();
+        auto       document = Read(gltf);
+        CT_LOG_INFO(Data, "timing: lookup {} in {:.1f} ms", gltf.generic_string(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read_start).count());
+        CharacterProfile(character, document, profile, name, options, true);
     });
 }
 
