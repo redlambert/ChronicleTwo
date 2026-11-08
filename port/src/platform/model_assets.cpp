@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <tuple>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -160,6 +161,7 @@ struct Document : std::enable_shared_from_this<Document> {
     bool                                                                      standard_only = false; /**< Whether the standard scene supplies all model identities. */
     mutable std::unordered_map<std::size_t, std::string>                      embedded_keys;         /**< Content identities of embedded images by standard image index. */
     std::shared_ptr<const std::vector<bool>>                                  scaled_nodes;          /**< Standard nodes some animation scales to other than one, once computed. */
+    std::optional<std::size_t>                                                model_index;           /**< Bundle model SelectModel chose, or none for the bundle itself. */
 
     explicit Document(std::shared_ptr<fastgltf::Asset> input) : storage(std::move(input)), asset(*storage) {}
 };
@@ -431,6 +433,7 @@ std::shared_ptr<Document> Derive(const Document &source) {
  */
 std::shared_ptr<Document> SelectModel(const std::shared_ptr<Document> &source, std::optional<std::size_t> index) {
     auto selected = Derive(*source);
+    selected->model_index = index;
     if (!index && source->custom->contains("models") && source->custom->at("models").empty()) {
         selected->metadata = {
             {"frames", Json::array()},
@@ -948,6 +951,59 @@ Json MeshIdentity(const Document &document, const fastgltf::Node &node, Json det
     detail["primitives"] = std::move(primitives);
     detail["material_count"] = material_count;
     return detail;
+}
+
+/**
+ * A built mesh identity, kept with the glTF contents and gameplay JSON it came from so neither can be freed and
+ * replaced by another model at the same address while the entry lives.
+ */
+struct MeshIdentityEntry {
+    std::shared_ptr<fastgltf::Asset> storage;
+    std::shared_ptr<Json>            custom;
+    std::shared_ptr<const Json>      identity;
+};
+
+using MeshIdentityKey = std::tuple<const fastgltf::Asset *, const Json *, std::optional<std::size_t>, bool, std::size_t, bool, std::size_t, std::size_t>;
+
+std::map<MeshIdentityKey, MeshIdentityEntry> mesh_identity_cache;
+std::mutex                                   mesh_identity_cache_mutex;
+
+/**
+ * Cached front for MeshIdentity. Its result depends only on the glTF contents, the gameplay JSON, which model of
+ * the bundle is selected (or the standard scene), the datapack flag and the mesh, so a model loaded again (Max's outfit on every menu
+ * open) reuses the first result instead of rebuilding it.
+ */
+std::shared_ptr<const Json> CachedMeshIdentity(const Document &document, const fastgltf::Node &node, std::size_t mdt) {
+    // Only documents read by path are reused (Read keeps them until Clear); a document parsed from bytes is new
+    // every time, so caching it would only pile up entries.
+    if (document.relative.empty()) {
+        return std::make_shared<const Json>(MeshIdentity(document, node, document.metadata.at("meshes").at(mdt)));
+    }
+
+    const MeshIdentityKey key{document.storage.get(), document.custom.get(), document.model_index, document.standard_only,
+                              document.node_offset, document.overlaid,
+                              *node.meshIndex, mdt};
+    {
+        std::lock_guard lock(mesh_identity_cache_mutex);
+
+        if (const auto found = mesh_identity_cache.find(key); found != mesh_identity_cache.end()) {
+            return found->second.identity;
+        }
+    }
+
+    auto identity = std::make_shared<const Json>(MeshIdentity(document, node, document.metadata.at("meshes").at(mdt)));
+    {
+        std::lock_guard lock(mesh_identity_cache_mutex);
+        mesh_identity_cache.insert_or_assign(key, MeshIdentityEntry{.storage = document.storage, .custom = document.custom, .identity = identity});
+        static bool logged = false;
+
+        if (!logged) {
+            logged = true;
+            CT_LOG_INFO(Data, "timing: mesh metadata cached from now on");
+        }
+    }
+
+    return identity;
 }
 
 /**
@@ -1625,6 +1681,10 @@ void Clear() {
         std::lock_guard lock(gameplay_cache_mutex);
         gameplay_cache.clear();
     }
+    {
+        std::lock_guard lock(mesh_identity_cache_mutex);
+        mesh_identity_cache.clear();
+    }
     inverse_binds.clear();
     native_channels.clear();
     native_morphs.clear();
@@ -2135,7 +2195,8 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 continue;
             }
             const auto identity_start = timing_clock::now();
-            const auto mesh = MeshIdentity(*document, node, document->metadata.at("meshes").at(ModelInteger<std::size_t>(detail.at("mdt"))));
+            const auto  mesh_identity = CachedMeshIdentity(*document, node, ModelInteger<std::size_t>(detail.at("mdt")));
+            const Json &mesh = *mesh_identity;
             int        type = VisualType(load.visual_type, name);
             if (type == MG_VISUAL_CREATE_MOTION_MDT && !node.skinIndex) {
                 type = MG_VISUAL_CREATE_FIX_MDT;
