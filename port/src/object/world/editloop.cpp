@@ -26,6 +26,7 @@
 #include "gamepad.hpp"
 #include "helpmes.hpp"
 #include "log/game_output.hpp"
+#include "log/log.hpp"
 #include "main.hpp"
 #include "mainloop.hpp"
 #include "mapjump.hpp"
@@ -884,6 +885,9 @@ void EditInit(INIT_LOOP_ARG arg) {
     MainCharaBuff.Align64();
     MainCharaBuff.stSetLocked(true);
     data_size = MainCharaBuff.stGetRest();
+    CT_LOG_INFO(Memory, "town entry: map {}, main chara stack live {}, stack {}, size {}, used {}, lending {} quadwords",
+                MapNo, dc2::memory::ArenaStorageLive(MainCharaBuff), static_cast<const void *>(MainCharaBuff.stack),
+                MainCharaBuff.stack_size, MainCharaBuff.stack_used, data_size);
     SubDataBuff.stSetBorrowedBuffer(MainCharaBuff, std::span(MainCharaBuff.stGetTop(), static_cast<std::size_t>(data_size)));
     SubDataBuff.stReset();
     SetCurrentDir(nullptr);

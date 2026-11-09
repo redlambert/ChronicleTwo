@@ -15,6 +15,7 @@
 #include <print>
 #include <string>
 #include <string_view>
+#include <source_location>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -1210,8 +1211,12 @@ std::optional<dc2::memory::ArenaBinding> BindingProof(const mgCMemory &memory, c
  * Stops an invalid arena binding before it can access unowned storage.
  *
  */
-[[noreturn]] void InvalidBinding(int size) {
+[[noreturn]] void InvalidBinding(int size, std::source_location where = std::source_location::current()) {
     std::println(stderr, "arena binding extent {} has no live source allocation", size);
+    // The log is written on another thread, so it is flushed first or the reason is lost with the abort.
+    CT_LOG_CRITICAL(Memory, "arena binding extent {} has no live source allocation (mg_memory.cpp line {})", size,
+                    where.line());
+    LogFlush();
     std::abort();
 }
 
@@ -1733,6 +1738,15 @@ void mgCMemory::stSetBorrowedBuffer(mgCMemory &owner, std::span<u_long128> stora
     }
     const auto binding = dc2::memory::BorrowProof(owner, storage.data(), storage.size_bytes());
     if (!binding || !dc2::memory::BindingIndependentOf(*binding, *this)) {
+        const std::string_view owner_name(owner.name, strnlen(owner.name, sizeof(owner.name)));
+        const std::string_view borrower_name(name, strnlen(name, sizeof(name)));
+        CT_LOG_CRITICAL(Memory,
+                        "borrow refused: '{}' [{}] lending to '{}' [{}]; owner live {}, stack {}, size {}, used {}, "
+                        "asked {} quadwords at {}; proof {}",
+                        owner_name, static_cast<const void *>(&owner), borrower_name, static_cast<const void *>(this),
+                        dc2::memory::ArenaStorageLive(owner), static_cast<const void *>(owner.stack), owner.stack_size,
+                        owner.stack_used, storage.size(), static_cast<const void *>(storage.data()),
+                        binding ? "made, but the borrower already backs the owner" : "refused");
         InvalidBinding(static_cast<int>(storage.size()));
     }
     dc2::memory::InvalidateArenaGeneration(*this);

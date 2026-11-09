@@ -1224,6 +1224,7 @@ void CScene::AssignStack(int index) {
 
     if (index <= 1 || index >= stack_num || static_cast<std::size_t>(index) >= std::size(stack) ||
         stack[index] == nullptr || stack[index - 1] == nullptr) {
+        CT_LOG_WARN(Memory, "scene stack {}: not shared, the stack or the one before it is missing", index);
         return;
     }
 
@@ -1236,19 +1237,34 @@ void CScene::AssignStack(int index) {
     int   remaining = stack[index - 1]->stGetRest();
     auto *source = stack[index - 1]->stGetTop();
     if (remaining <= 0 || source == nullptr) {
+        CT_LOG_WARN(Memory, "scene stack {}: not shared, stack {} has no room ({} quadwords left, size {}, top {})",
+                    index, index - 1, remaining, stack[index - 1]->stack_size, static_cast<const void *>(source));
         return;
     }
     const auto source_lifetime = dc2::memory::ArenaLifetime::Capture(*stack[index - 1]);
-    if (!source_lifetime.IsLive() || source_lifetime.WouldRetireOnReset(*stack[index], dc2::memory::ArenaResetKind::Rebind)) {
+    if (!source_lifetime.IsLive()) {
+        CT_LOG_WARN(Memory, "scene stack {}: not shared, stack {} is no longer live", index, index - 1);
+        return;
+    }
+    if (source_lifetime.WouldRetireOnReset(*stack[index], dc2::memory::ArenaResetKind::Rebind)) {
+        CT_LOG_WARN(Memory, "scene stack {}: not shared, stack {} would retire when stack {} is rebound", index,
+                    index - 1, index);
         return;
     }
     RetireSceneResources(*this, *stack[index], dc2::memory::ArenaResetKind::Rebind);
     if (!stack[index]->stShareBuffer(*stack[index - 1], std::span(source, static_cast<std::size_t>(remaining)))) {
+        CT_LOG_WARN(Memory, "scene stack {}: not shared, stack {} refused to share {} quadwords", index, index - 1,
+                    remaining);
         return;
     }
     memory = stack[index];
     memory->stReset();
     stack_no = index;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Memory, "scene stack {}: shared {} quadwords from stack {}", index, remaining, index - 1);
+    }
 }
 
 CSceneCharacter *CScene::GetSceneCharacter(int index) {
