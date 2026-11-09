@@ -471,8 +471,6 @@ int Run(int argc, const char **argv) {
     renderer.display_aspect = 4.0f / 3.0f;
     renderer.present_mode = PresentMode(settings.present_mode);
     renderer.pipeline_cache = PathsSaveRoot() / "pipeline_cache.bin";
-    // Sharp camera photos are read in the background now, so no menu waits on the disk for them later.
-    PhotoHdPreload();
     renderer.progress = ReportPipelineProgress;
     renderer.offscreen = offscreen;
     renderer.layout = Layout(ConfigGet());
@@ -540,6 +538,8 @@ int Run(int argc, const char **argv) {
         CrashTestArm(*crash_test, CrashTestWhen::FirstFrame);
     }
     CT_PROFILE_THREAD("Game / host");
+    // Sharp camera photos are read once here, so no menu waits on the disk for them later.
+    PhotoHdPreload();
     MainLoop();
 
     ClockRemovePumpHook(PumpHost);

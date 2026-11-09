@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 #include <system_error>
-#include <thread>
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -20,7 +20,7 @@
 
 namespace {
 
-// Guards every member below. The preload thread fills them while the game runs.
+// Guards every member below.
 std::mutex                                         photos_mutex;
 std::unordered_map<uint64_t, std::vector<uint8_t>> photos;
 std::unordered_set<uint64_t>                       missing;
@@ -111,7 +111,13 @@ void PhotoHdPreload() {
         return;
     }
     started = true;
-    std::thread(PreloadPhotos).detach();
+    // Read here, on the calling thread: a few small files at startup. A background thread here kept the Switch
+    // build from starting, as the game has already claimed almost all of the console's memory by then.
+    try {
+        PreloadPhotos();
+    } catch (const std::exception &error) {
+        CT_LOG_ERROR(Gfx, "photo: preload failed: {}", error.what());
+    }
 }
 
 void PhotoHdRemember(const uint8_t *image16, size_t bytes, std::vector<uint8_t> rgba) {
