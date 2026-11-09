@@ -12,27 +12,8 @@
 #include "render/primitive_submission.hpp"
 #include "render/renderer.hpp"
 #include "text/menu_label.hpp"
-#include "log/log.hpp"
 
 namespace {
-
-// Brightness the mirrored wallpaper fades to at the far edge of the widescreen sides (1 = no fade).
-constexpr float kBackdropSideFloor = 0.15f;
-
-/**
- * Brightness of the backdrop at screen x: full across the 4:3 area, easing linearly down to
- * kBackdropSideFloor at the edge of the visible screen on each side.
- */
-float BackdropSideShade(float x, const mgPortExtent &extent) {
-    float t = 0.0f;
-    if (x < 0.0f && extent.left < 0) {
-        t = x / static_cast<float>(extent.left);
-    } else if (x > mgScreenWidth && extent.right > mgScreenWidth) {
-        t = (x - mgScreenWidth) / static_cast<float>(extent.right - mgScreenWidth);
-    }
-    t = std::clamp(t, 0.0f, 1.0f);
-    return 1.0f - (1.0f - kBackdropSideFloor) * t;
-}
 
 bool IsBackdrop(mgCDrawPrim *prim, mgRect<int> uv, char *name, int width, int height, int top = 0) {
     if (!prim || !prim->prim.TME || uv.left != 0 || uv.top != top ||
@@ -57,7 +38,7 @@ void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float a
         {1, 1},
         {0, 1}
     };
-    const auto append_piece = [&](float left, float right, float u0, float u1) {
+    const auto append = [&](float left, float right, float u0, float u1) {
         // Linear filtering must stay inside the artwork at a reflection seam;
         // otherwise its transparent padding leaves a dark hairline.
         if (wide) {
@@ -65,39 +46,10 @@ void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float a
             u1 = std::clamp(u1, 0.5f, artwork_width - 0.5f);
         }
         for (const auto &corner : corners) {
-            const float x = corner[0] ? right : left;
-            uint8_t     shaded[4];
-            std::copy_n(color, 4, shaded);
-            if (wide) {
-                const float shade = BackdropSideShade(x, extent);
-                for (int channel = 0; channel < 3; ++channel) {
-                    shaded[channel] = static_cast<uint8_t>(static_cast<float>(color[channel]) * shade + 0.5f);
-                }
-            }
             vertices.push_back(mgPortPrimVertex(prim,
-                                                x, corner[1] ? rect.top + rect.bottom : rect.top, 0,
-                                                corner[0] ? u1 : u0, corner[1] ? uv.top + uv.bottom : uv.top, shaded));
+                                                corner[0] ? right : left, corner[1] ? rect.top + rect.bottom : rect.top, 0,
+                                                corner[0] ? u1 : u0, corner[1] ? uv.top + uv.bottom : uv.top, color));
         }
-    };
-    // Split each strip at the 4:3 edges so the side fade starts exactly there and the 4:3 area stays untouched.
-    const auto append = [&](float left, float right, float u0, float u1) {
-        if (!wide || right <= left) {
-            append_piece(left, right, u0, u1);
-            return;
-        }
-        const float cuts[2] = {0.0f, static_cast<float>(mgScreenWidth)};
-        float       piece_left = left;
-        float       piece_u = u0;
-        for (const float cut : cuts) {
-            if (cut <= piece_left || cut >= right) {
-                continue;
-            }
-            const float cut_u = u0 + (u1 - u0) * (cut - left) / (right - left);
-            append_piece(piece_left, cut, piece_u, cut_u);
-            piece_left = cut;
-            piece_u = cut_u;
-        }
-        append_piece(piece_left, right, piece_u, u1);
     };
     const float left = rect.left;
     const float right = left + rect.right;
@@ -137,19 +89,7 @@ void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float a
             append(start, end, start_u + (start - edge) * rate, start_u + (end - edge) * rate);
         }
     }
-    // The side fade needs the vertex colours blended across each strip, so shading is on for this submit only.
-    const auto shading = prim.prim.IIP;
-    if (wide) {
-        prim.prim.IIP = 1;
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            CT_LOG_INFO(Menu, "menu backdrop: widescreen sides fade to {:.0f}% at the screen edge",
-                        kBackdropSideFloor * 100.0f);
-        }
-    }
     mgPortPrimSubmit(prim, gfx::Primitive::Triangles, vertices);
-    prim.prim.IIP = shading;
 }
 
 } // namespace

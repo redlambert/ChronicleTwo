@@ -8141,11 +8141,14 @@ int         change_spark_frames = 0;
 
 // Glow-up before a quick change, in gameplay ticks (30 a second).
 constexpr int kWindUpTicks = 8;
-// Glow per wind-up tick, as a point on the rising half of the white pulse (kWindUpTicks is solid white):
-// a flicker that quickens and then locks on.
-constexpr int kWindUpGlow[kWindUpTicks] = {3, 1, 5, 2, 6, 4, 7, 8};
-// Stars pulled in toward the character during the wind-up, arriving as the swap happens.
-constexpr int kGatherSparksPerTick = 4;
+// Glow per wind-up tick, as a point on the rising half of the white pulse (kWindUpTicks is full glow): a
+// steady rise.
+constexpr int kWindUpGlow[kWindUpTicks] = {1, 2, 3, 4, 5, 6, 7, 8};
+// Stars pulled in toward the character during the wind-up, spiralling as they come and arriving as the swap
+// happens. They are drawn larger and brighter than the burst, which plays over a glowing character.
+constexpr int   kGatherSparksPerTick = 6;
+constexpr float kGatherSparkSwirl = 2.2f;
+constexpr float kGatherSparkBoost = 1.8f;
 constexpr int kGatherSpawnTicks = kWindUpTicks - 2;
 constexpr int kGatherSparkMax = kGatherSparksPerTick * kGatherSpawnTicks;
 // Kept apart from change_sparks, which also time the cool-down between quick changes.
@@ -8418,7 +8421,9 @@ void DrawSparks(const ChangeSpark *sparks, int count, const sceVu0FVECTOR base, 
         const float        envelope = gathering ? std::min(1.0f, 0.25f + t * 1.5f)
                                                 : (t < 0.08f ? t / 0.08f : std::min(1.0f, 2.0f - 2.0f * t));
         const float        twinkle = 0.75f + 0.25f * sinf(spark.phase + 0.9f * static_cast<float>(spark.age));
-        const int          alpha = static_cast<int>(static_cast<float>(kChangeSparkAlpha) * envelope * twinkle);
+        const float        boost = gathering ? kGatherSparkBoost : 1.0f;
+        const int          alpha = std::min(
+            0xFF, static_cast<int>(static_cast<float>(kChangeSparkAlpha) * envelope * twinkle * boost));
         const float        size = spark.size * twinkle;
         int                top_left[4];
         int                bottom_right[4];
@@ -8525,7 +8530,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: charging up for {} ticks (flicker and gathering stars) before the swap",
+        CT_LOG_INFO(Menu, "quick change: charging up for {} ticks (steady glow, swirling stars) before the swap",
                     kWindUpTicks);
     }
     return -1;
@@ -8554,14 +8559,15 @@ void SpawnGatherSpark(CActionChara *chara, int ticks_left) {
     spark.vel[1] = 0.5f * height;
     spark.vel[2] = 0.0f;
     spark.vel[3] = 0.0f;
-    spark.size = 2.5f + fRand(2.0f);
+    spark.size = 6.0f + fRand(4.0f);
     spark.phase = fRand(2.0f * std::numbers::pi_v<float>);
     spark.age = 0;
     spark.life = ticks_left;
 }
 
 /**
- * Pulls the gathering stars in, speeding up as they near the waist (kept in vel[1]).
+ * Pulls the gathering stars in, swirling round the character and speeding up as they near the waist (kept in
+ * vel[1]).
  */
 void StepGatherSparks() {
     for (int i = 0; i < gather_spark_count; i++) {
@@ -8569,9 +8575,12 @@ void StepGatherSparks() {
         spark.age = std::min(spark.age + 1, spark.life);
         const float t = static_cast<float>(spark.age) / static_cast<float>(spark.life);
         const float pull = t * t;
-        spark.pos[0] = spark.from[0] * (1.0f - pull);
+        const float swirl = kGatherSparkSwirl * t;
+        const float x = spark.from[0] * (1.0f - pull);
+        const float z = spark.from[2] * (1.0f - pull);
+        spark.pos[0] = x * cosf(swirl) - z * sinf(swirl);
         spark.pos[1] = spark.from[1] + (spark.vel[1] - spark.from[1]) * pull;
-        spark.pos[2] = spark.from[2] * (1.0f - pull);
+        spark.pos[2] = x * sinf(swirl) + z * cosf(swirl);
     }
 }
 
