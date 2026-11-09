@@ -5,6 +5,7 @@
 #include <libpkt.h>
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -18,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2362,6 +2364,27 @@ namespace {
 /** Catalog entries decoded together ahead of registration. */
 constexpr std::size_t kPrefetchBatch = 32;
 
+/**
+ * Logs, once per name, the files the menu wallpapers come from, so replacement art can be made for them.
+ */
+void LogMenuWallpaperSource(const texture_catalog::Source &source, const texture_catalog::Entry &entry) {
+    static constexpr std::array<std::string_view, 4> kWallpapers = {"bg16", "inv_bg", "chr_bg", "op_bg"};
+    static std::array<bool, kWallpapers.size()>      logged{};
+    const std::string                                name = DecodeName(entry.name);
+
+    for (std::size_t i = 0; i < kWallpapers.size(); ++i) {
+        if (logged[i] || name != kWallpapers[i]) {
+            continue;
+        }
+        logged[i] = true;
+        const std::string image =
+            !entry.variants.empty() && !entry.variants.front().levels.empty() ? entry.variants.front().levels.front().path : "";
+        CT_LOG_INFO(Data, "menu wallpaper: {} is picture {} of {}, image {} ({}x{} texels, {} variants)", name,
+                    entry.picture, source.source, image.empty() ? "none" : image, entry.width, entry.height,
+                    entry.variants.size());
+    }
+}
+
 int EnterSource(mgCTextureManager *manager, int block, const texture_catalog::Source &source,
                 mgCMemory *stack, mgCEnterIMGInfo *info, const MgTextureImageDecoder &decoder,
                 const MgTextureImageIdentity &identity = {}) {
@@ -2401,6 +2424,7 @@ int EnterSource(mgCTextureManager *manager, int block, const texture_catalog::So
         }
         const int group = entry->block;
         const int target = block + group;
+        LogMenuWallpaperSource(source, *entry);
         if (mgCTexture *texture = EnterCatalog(manager, target, *entry, decoder, identity, source.source)) {
             last_block = std::max(last_block, static_cast<int>(texture->block));
             if (info && group < MG_TEXTURE_IMG_GROUP_MAX && info->block[group] < 0) {
