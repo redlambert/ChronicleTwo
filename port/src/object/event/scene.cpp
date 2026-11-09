@@ -1222,8 +1222,12 @@ void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::A
 void CScene::AssignStack(int index) {
     mgCMemory *memory = {};
 
-    if (index <= 1 || index >= stack_num || static_cast<std::size_t>(index) >= std::size(stack) ||
-        stack[index] == nullptr || stack[index - 1] == nullptr) {
+    if (index <= 1) {
+        // The first stacks are bound by the map load itself; asking to share them is a normal no-op.
+        return;
+    }
+    if (index >= stack_num || static_cast<std::size_t>(index) >= std::size(stack) || stack[index] == nullptr ||
+        stack[index - 1] == nullptr) {
         CT_LOG_WARN(Memory, "scene stack {}: not shared, the stack or the one before it is missing", index);
         return;
     }

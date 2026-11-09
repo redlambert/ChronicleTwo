@@ -882,6 +882,18 @@ void EditInit(INIT_LOOP_ARG arg) {
         LoadMap();
     }
 
+    // An event that skips the villagers (leaving the first dungeon floor for the first time does) also skips
+    // setting up their stack, so a session that never visited a town has none here. Set it up empty, as the
+    // villager load does for a map without villagers, before the sub data borrows the rest of it.
+    if (MainCharaBuff.stack_size <= 0 || !dc2::memory::ArenaStorageLive(MainCharaBuff)) {
+        MainScene->AssignStack(2);
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            CT_LOG_INFO(Memory, "town entry: villagers were skipped, so their stack was set up empty (live {}, {} quadwords)",
+                        dc2::memory::ArenaStorageLive(MainCharaBuff), MainCharaBuff.stack_size);
+        }
+    }
     MainCharaBuff.Align64();
     MainCharaBuff.stSetLocked(true);
     data_size = MainCharaBuff.stGetRest();
