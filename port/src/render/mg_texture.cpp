@@ -4,6 +4,7 @@
 #include <libgraph.h>
 #include <libpkt.h>
 
+#include <chrono>
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -840,7 +841,13 @@ gfx::TextureHandle UploadMemory16(const mgCTexture *texture, Entry &entry) {
     const size_t   bytes = Memory16Bytes(texture);
     entry.memory16.assign(raw, raw + bytes);
     // A camera photo taken on PC also has a sharper copy, found again by its retail bytes.
+    // Stutter diagnostic: times the sharp-photo lookup. Remove with the other timing logs.
+    const auto                  lookup_start = std::chrono::steady_clock::now();
     const std::vector<uint8_t> *hd = texture->width == 64 && texture->height == 64 ? PhotoHdFind(raw, bytes) : nullptr;
+    if (const double lookup_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lookup_start).count();
+        lookup_ms >= 5.0) {
+        CT_LOG_INFO(Gfx, "timing: photo lookup for '{}' took {:.1f} ms ({})", static_cast<const char *>(texture->name), lookup_ms, hd != nullptr ? "sharp copy" : "none");
+    }
     entry.physical_scale = hd != nullptr ? kPhotoHdSize / 64 : 1;
     const auto extent = MgTexturePhysicalExtent(texture);
     auto       handle = gfx::CreateTexture({.width = extent.width, .height = extent.height, .format = gfx::TextureFormat::Rgba8, .mip_levels = 1, .has_alpha = true});

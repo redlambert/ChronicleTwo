@@ -44,6 +44,7 @@
 #include "ios/bridge.hpp"
 #endif
 #include "audio/sound_runtime.hpp"
+#include "photo_hd.hpp"
 #include "platform/paths.hpp"
 #include "platform/settings.hpp"
 #include "platform/window.hpp"
@@ -470,6 +471,8 @@ int Run(int argc, const char **argv) {
     renderer.display_aspect = 4.0f / 3.0f;
     renderer.present_mode = PresentMode(settings.present_mode);
     renderer.pipeline_cache = PathsSaveRoot() / "pipeline_cache.bin";
+    // Sharp camera photos are read in the background now, so no menu waits on the disk for them later.
+    PhotoHdPreload();
     renderer.progress = ReportPipelineProgress;
     renderer.offscreen = offscreen;
     renderer.layout = Layout(ConfigGet());

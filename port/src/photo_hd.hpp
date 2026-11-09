@@ -16,6 +16,8 @@ inline constexpr uint32_t kPhotoWorkScale = 4;
 
 /** True for the camera's capture target. */
 bool PhotoHdIsWorkTexture(const char *name);
+/** Reads every stored photo in the background, so the first menu that shows photos does not wait on the disk. */
+void PhotoHdPreload();
 /** Keeps an RGBA kPhotoHdSize square for the retail picture image16, in memory and on disk. */
 void PhotoHdRemember(const uint8_t *image16, size_t bytes, std::vector<uint8_t> rgba);
 /** The RGBA kPhotoHdSize square kept for image16, or nullptr. */
