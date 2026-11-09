@@ -8142,6 +8142,29 @@ FormPlace PlaceForm(const CMenuPosDataForm &form) {
 
 } // namespace
 
+// The Make page keeps its other panels, and the name plates of ideas it has shown, just past retail's screen,
+// some overlapping it by more than a sliver, so they showed at the sides of a wider window ("Select Photo" at
+// the left, an idea's name at the right). On that page everything but its own background and screen-wide
+// overlays draws clipped to retail's screen, as the PS2 showed it.
+static bool MakePageClipsForm(const CMenuPosDataForm &form) {
+    if (MenuCommonInfo == nullptr ||
+        (MenuCommonInfo->now_mode != MENU_MODE_INVENT && MenuCommonInfo->now_mode != MENU_MODE_INVENT_DIRECT)) {
+        return false;
+    }
+    if (form.dtype == MENUFORM_DTYPE_MAINFRM || form.dtype == MENUFORM_DTYPE_MAINIMG || menuworld::ScreenWideForm(form)) {
+        return false;
+    }
+    if (form.name != nullptr && std::strcmp(form.name, "inv_bg") == 0) {
+        return false;
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "make page: panels clipped to the 4:3 screen");
+    }
+    return true;
+}
+
 bool MenuFormParked(const CMenuPosDataForm &form) {
     return PlaceForm(form) != FormPlace::Shown;
 }
@@ -8216,7 +8239,7 @@ void CMenuPosDataForm::MenuFormDraw(int &state) {
     if (const auto spread = menuworld::FormAnchor(*this)) {
         anchor.emplace(*spread);
     }
-    const mgPortScreenClipScope clip(place == FormPlace::Parked);
+    const mgPortScreenClipScope clip(place == FormPlace::Parked || MakePageClipsForm(*this));
     const CDC2Mes *const        saved_message = form_message;
     form_message = dtype == MENUFORM_DTYPE_MSGFORM && sub_no < std::size(MenuDCMsg) ? MenuDCMsg[sub_no] : nullptr;
     int draw_x = fptosi(x);
