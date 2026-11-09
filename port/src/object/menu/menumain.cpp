@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,8 @@
 #include "gamepad.hpp"
 #include "inventmn.hpp"
 #include "log/game_output.hpp"
+#include "log/log.hpp"
+#include "platform/stutter_timing.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
 #include "mapselect.hpp"
@@ -946,9 +949,31 @@ int MenuMainInit(MENU_INIT_ARG *arg);
 
 int MenuMainExit();
 
+namespace {
+// Stutter diagnostic: splits a slow menu frame into its parts. Remove with the other timing logs.
+double menu_page_key_ms = 0.0;
+double menu_page_draw_ms = 0.0;
+double menu_refresh_ms = 0.0;
+} // namespace
+
 int MenuMainLoop() {
+    const int  mode = MenuCommonInfo->now_mode;
+    const auto key_start = std::chrono::steady_clock::now();
+    menu_page_key_ms = 0.0;
+    menu_page_draw_ms = 0.0;
+    menu_refresh_ms = 0.0;
     int next_mode = MenuMainKey();
+    const double key_ms = dc2::stutter_timing::ElapsedMs(key_start);
+    const auto   draw_start = std::chrono::steady_clock::now();
     MenuMainDraw();
+    const double draw_ms = dc2::stutter_timing::ElapsedMs(draw_start);
+
+    if (key_ms + draw_ms >= 20.0) {
+        CT_LOG_INFO(Menu,
+                    "timing: menu frame on page {}: step {:.1f} ms (page step {:.1f}, data refresh {:.1f}), draw {:.1f} ms (page draw {:.1f})",
+                    mode, key_ms, menu_page_key_ms, menu_refresh_ms, draw_ms, menu_page_draw_ms);
+    }
+
     return next_mode;
 }
 
@@ -968,7 +993,9 @@ int MenuMainKey() {
         menu_debug_flag ^= 1;
     }
 
+    const auto page_key_start = std::chrono::steady_clock::now();
     result = menu_keyfunctbl[MenuCommonInfo->now_mode]();
+    menu_page_key_ms = dc2::stutter_timing::ElapsedMs(page_key_start);
 
     switch (result) {
         case 1:
@@ -1035,7 +1062,9 @@ int MenuMainKey() {
 
     if (refresh_cnt >= PAL_TIMING(25, 30)) {
         refresh_cnt = 0;
+        const auto refresh_start = std::chrono::steady_clock::now();
         UserDataRefresh();
+        menu_refresh_ms = dc2::stutter_timing::ElapsedMs(refresh_start);
     }
 
     MenuDoubleDrawCheck = false;
@@ -1053,7 +1082,9 @@ void MenuMainDraw() {
         DrawMenuFillBox(0x80, 0, 0, 0);
         prim->offset_x = 0;
         prim->offset_y = 0;
+        const auto page_draw_start = std::chrono::steady_clock::now();
         menu_drawfunctbl[MenuCommonInfo->now_mode]();
+        menu_page_draw_ms = dc2::stutter_timing::ElapsedMs(page_draw_start);
 
         if (menu_debug_flag != 0) {
             MenuDebugModeDraw();

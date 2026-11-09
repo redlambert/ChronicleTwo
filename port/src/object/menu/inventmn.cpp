@@ -7182,7 +7182,9 @@ int MenuInventKey() {
     switch (CMenuInventPt->mode) {
         case MENU_ASK_MODE_OPEN:
             if (ReadBGSync() == 0 && CMenuInventPt->opened == 0) {
+                const auto init_end_start = std::chrono::steady_clock::now();
                 CMenuInventPt->InitEnd();
+                CT_LOG_INFO(Menu, "timing: make finish opening (InitEnd) {:.1f} ms", MakeTimingMs(init_end_start));
                 CMenuInventPt->mode = MENU_ASK_MODE_NONE;
                 CMenuInventPt->opened = true;
                 CMenuInventPt->fade_alpha = 0x80;
@@ -7400,9 +7402,17 @@ void MenuInventDraw() {
     if (CMenuInventPt == nullptr) {
         return;
     }
+    const auto forms_start = std::chrono::steady_clock::now();
     MenuPosData->FormDraw();
+    const double forms_ms = MakeTimingMs(forms_start);
+    const auto   effects_start = std::chrono::steady_clock::now();
     MenuEffect[0]->Draw();
     MenuEffect[1]->Draw();
+    const double effects_ms = MakeTimingMs(effects_start);
+
+    if (forms_ms + effects_ms >= 15.0) {
+        CT_LOG_INFO(Menu, "timing: make draw: forms {:.1f} ms, effects {:.1f} ms", forms_ms, effects_ms);
+    }
 
     if (menu_debug_flag != 0) {
         MenuInventDebugDraw();
