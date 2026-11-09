@@ -2732,7 +2732,12 @@ std::vector<character_motion::Action> BuildActions(const std::shared_ptr<Documen
     }
     auto document = SelectModel(owner, model);
     if (variant) {
-        document->node_offset = ModelInteger<std::size_t>(variant->at("node_offset"));
+        // SelectModel shares its documents between loads, so a different offset gets its own selection.
+        const auto node_offset = ModelInteger<std::size_t>(variant->at("node_offset"));
+        if (node_offset != document->node_offset) {
+            document = SelectModelUncached(owner, model);
+            document->node_offset = node_offset;
+        }
     }
     const auto                           &actions = resource.at("actions");
     std::vector<character_motion::Action> built;

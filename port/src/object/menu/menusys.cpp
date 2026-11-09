@@ -5691,8 +5691,12 @@ static inline u_int align16_blocks(u_int size) {
 }
 
 int CMenuItemInfo::IsAskExtend(int select_key, int push_button) {
-    mgCMemory         *load_stack = &MenuCharaLoadStack;
-    mgCMemory          work;
+    mgCMemory *load_stack = &MenuCharaLoadStack;
+    // Retail made this arena local; its memory outlived the call, so that was harmless on PS2. The port
+    // registers the build-up flash's animation against the arena that built it and drops the animation once
+    // that arena is gone, which left the flash frozen on its first, fully transparent frame. Keeping the arena
+    // alive lets the flash play; sharing it again for the next build-up retires the previous flash's animation.
+    static mgCMemory   work;
     MENU_ASKMODE_PARA *para = &ask_para;
     /**
      *
@@ -5892,6 +5896,7 @@ int CMenuItemInfo::IsAskExtend(int select_key, int push_button) {
                         build_up_chara->SetPosition(position);
                         build_up_chara->SetMotion("\x94\xAD\x93\xAE", 0, 1);
                         build_up_chara->Step();
+                        CT_LOG_INFO(Menu, "build-up flash: loaded into the kept-alive arena, animation should play");
                         mgCFrame *frame = build_up_chara->CObjectFrame::frame;
 
                         if (frame != nullptr) {
