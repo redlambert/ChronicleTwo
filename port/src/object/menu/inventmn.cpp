@@ -6,14 +6,12 @@
 #include "platform/native_config.hpp"
 #include "memory/tracked_copy.hpp"
 #include "log/game_output.hpp"
-#include "log/log.hpp"
 // clang-format on
 
 #include "common.h"
 #include "mw_runtime.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -2691,20 +2689,6 @@ void CMenuInvent::ExitEnd() {
 }
 
 void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
-    // Stutter diagnostic. Remove with the other timing logs.
-    auto       step_start = std::chrono::steady_clock::now();
-    double     background_images_ms = 0.0;
-    double     shared_images_ms = 0.0;
-    double     layout_ms = 0.0;
-    double     icons_ms = 0.0;
-    double     photos_ms = 0.0;
-    double     lists_ms = 0.0;
-    double     forms_ms = 0.0;
-    const auto lap = [&step_start]() {
-        const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
-        step_start = std::chrono::steady_clock::now();
-        return elapsed;
-    };
     const auto         pack_bytes = directory.Bytes();
     const u8          *pack = reinterpret_cast<const u8 *>(pack_bytes.data());
     mgCTextureManager *tex_manager = &mgTexManager;
@@ -2717,7 +2701,6 @@ void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
             tex_manager->EnterIMGFile(reinterpret_cast<u8 *>(file), image_block, nullptr, nullptr);
             Tex_Hatsumei = tex_manager->GetTexture("inv0", -1);
         }
-        background_images_ms = lap();
 
         file = AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "edmenu.json", nullptr);
 
@@ -2725,33 +2708,23 @@ void CMenuInvent::EnterDataMenu(const dc2::io::FileRead &directory) {
             tex_manager->EnterIMGFile(reinterpret_cast<u8 *>(file), MenuCommonInfo->tex_block[1], nullptr, nullptr);
             MenuPosData->AttachCommonTexInfo();
         }
-        shared_images_ms = lap();
 
         int size = 0;
         MenuDataAnalyze(reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "invent.cfg.json", &size)), size, &data_stack);
         MenuInventStack.Align64();
-        layout_ms = lap();
 
         icon_data[0].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[0].name);
         icon_data[1].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[1].name);
         icon_data[2].resource = dc2::assets::ReadDirectoryMember(directory, icon_data[2].name);
-        icons_ms = lap();
         AttachPictTex(tex_block[3], photo_tex, InventUserDataPtr->GetPhotoInfo(0), INVENT_PHOTO_NUM);
-        photos_ms = lap();
         script = reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "inv_com.cfg.json", &script_size));
         int size2 = 0;
         InventManagePt->LoadAnalyzeInventFile(reinterpret_cast<char *>(AssetDirectoryRead(reinterpret_cast<const unsigned int *>(pack), "inv6.lst", &size2)),
                                               size2);
-        lists_ms = lap();
     }
 
     AttachFormInfo();
     MenuMoveItemPtr->AttachForm();
-    forms_ms = lap();
-    CT_LOG_INFO(Menu,
-                "timing: make background pack: background images {:.1f}, shared menu images {:.1f}, layout {:.1f}, icons {:.1f}, "
-                "photos {:.1f}, invention lists {:.1f}, forms {:.1f}",
-                background_images_ms, shared_images_ms, layout_ms, icons_ms, photos_ms, lists_ms, forms_ms);
 }
 
 int CMenuInvent::ItemCmdAfter(int command, ITEMCMD_RET_PARA *para) {
@@ -5987,18 +5960,7 @@ CMenuInvent::CMenuInvent() {
     Init_MENUFORM_MAKEBRD_INFO(&make_board);
 }
 
-namespace {
-// Stutter diagnostic for the Make screen. Remove with the other timing logs.
-double MakeTimingMs(std::chrono::steady_clock::time_point start) {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-}
-} // namespace
-
 int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
-    const auto make_start = std::chrono::steady_clock::now();
-    double     make_background_ms = 0.0;
-    double     make_preview_start_ms = 0.0;
-    double     make_scripts_ms = 0.0;
     dc2::menu::ResetInventionMenu();
     if (memory == nullptr || !MenuInventStack.stShareStack(*memory)) {
         return 0;
@@ -6045,10 +6007,8 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     CMenuInventPt->data_stack.stSetChildBuffer(*stack, stack->Alloc(0x1310), 0x1310);
 
     if (CMenuInventPt->photo_only == 0) {
-        const auto background_start = std::chrono::steady_clock::now();
         const auto directory = dc2::menu::ReadMenuFile("inv2_bg.pac");
         CMenuInventPt->EnterDataMenu(directory);
-        make_background_ms = MakeTimingMs(background_start);
     }
 
     StartReadBG();
@@ -6084,10 +6044,7 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     MenuCharaLoadStack.stSetBorrowedBuffer(*stack, std::span(stack->stGetTop(), static_cast<std::size_t>(rest)));
     MenuCharaLoadStack.stClearUsed();
     MenuCharaLoadStack.stSetLocked(false);
-    const auto preview_start = std::chrono::steady_clock::now();
     CMenuInventPt->LoadCharaCheck();
-    make_preview_start_ms = MakeTimingMs(preview_start);
-    const auto scripts_start = std::chrono::steady_clock::now();
     CMenuPosDataForm *image_form = {};
 
     switch (CMenuInventPt->photo_only) {
@@ -6119,8 +6076,6 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
             break;
     }
 
-    make_scripts_ms = MakeTimingMs(scripts_start);
-    const auto tail_start = std::chrono::steady_clock::now();
     MenuCamInit(1.0f);
     itemmenu_chr_rotflag = true;
 
@@ -6152,9 +6107,6 @@ int MenuInventInit(mgCMemory *memory, int *tex_block, int arg) {
     InventInNetaEffectFlag = false;
     InitMenuDl(nullptr, 0);
     SetModeMenuDrawItemBoard(MENU_ITEM_BOARD_BAG);
-    CT_LOG_INFO(Menu,
-                "timing: make open {:.1f} ms: background pack {:.1f}, preview read start {:.1f}, page scripts {:.1f}, rest of setup {:.1f}",
-                MakeTimingMs(make_start), make_background_ms, make_preview_start_ms, make_scripts_ms, MakeTimingMs(tail_start));
     return 1;
 }
 
@@ -7182,9 +7134,7 @@ int MenuInventKey() {
     switch (CMenuInventPt->mode) {
         case MENU_ASK_MODE_OPEN:
             if (ReadBGSync() == 0 && CMenuInventPt->opened == 0) {
-                const auto init_end_start = std::chrono::steady_clock::now();
                 CMenuInventPt->InitEnd();
-                CT_LOG_INFO(Menu, "timing: make finish opening (InitEnd) {:.1f} ms", MakeTimingMs(init_end_start));
                 CMenuInventPt->mode = MENU_ASK_MODE_NONE;
                 CMenuInventPt->opened = true;
                 CMenuInventPt->fade_alpha = 0x80;
@@ -7402,17 +7352,9 @@ void MenuInventDraw() {
     if (CMenuInventPt == nullptr) {
         return;
     }
-    const auto forms_start = std::chrono::steady_clock::now();
     MenuPosData->FormDraw();
-    const double forms_ms = MakeTimingMs(forms_start);
-    const auto   effects_start = std::chrono::steady_clock::now();
     MenuEffect[0]->Draw();
     MenuEffect[1]->Draw();
-    const double effects_ms = MakeTimingMs(effects_start);
-
-    if (forms_ms + effects_ms >= 15.0) {
-        CT_LOG_INFO(Menu, "timing: make draw: forms {:.1f} ms, effects {:.1f} ms", forms_ms, effects_ms);
-    }
 
     if (menu_debug_flag != 0) {
         MenuInventDebugDraw();
@@ -7530,10 +7472,7 @@ void CMenuInvent::LoadCharaCheck() {
         return;
     }
 
-    const auto preview_finish_start = std::chrono::steady_clock::now();
     MenuItemCharaDataLoadEndCheck(MenuCharaBuild2, nullptr, MenuActionChara, 0, tex_block[1], -1);
-    const double preview_build_ms = MakeTimingMs(preview_finish_start);
-    const auto   preview_rest_start = std::chrono::steady_clock::now();
     character->ResetParent();
     if (MenuActionChara[3] && MenuUserParam.chara[0]->equip[2].item_no > 0) {
         character->SetRef(MenuActionChara[3], "hat");
@@ -7571,8 +7510,6 @@ void CMenuInvent::LoadCharaCheck() {
     poly_chr_form[0]->SetActionCharaPtr(character, tex_block[1], -1);
     unk_642 = unk_640 = 0;
     unk_648 = -std::numbers::pi_v<float> / 5.0f;
-    CT_LOG_INFO(Menu, "timing: make preview finish {:.1f} ms: build {:.1f}, pose and scripts {:.1f}",
-                MakeTimingMs(preview_finish_start), preview_build_ms, MakeTimingMs(preview_rest_start));
 }
 
 namespace {

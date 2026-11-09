@@ -156,7 +156,6 @@ DataReadPathNameExt DivPathNameExt(std::string_view path) {
 #include "platform/archive_mount.hpp"
 #include "platform/config_catalog.hpp"
 #include "platform/datapacks.hpp"
-#include "platform/stutter_timing.hpp"
 #include "platform/paths.hpp"
 #include "platform/texture_catalog.hpp"
 #include "platform/vfs.hpp"
@@ -564,28 +563,8 @@ int ReadSaveFile(const char *name, void *buffer, bool size_only, std::size_t cap
 
 // The save tree is searched before the index for host names, so a file WriteFile wrote shadows the
 // extracted copy. Returns -1 when neither has the name.
-int ResolveFileUntimed(const char *name, const std::string &key, void *buffer, bool size_only,
-                       std::size_t capacity);
-
-// Stutter diagnostics: times every real read and logs the slow ones.
 int ResolveFile(const char *name, const std::string &key, void *buffer, bool size_only,
                 std::size_t capacity) {
-    if (size_only || buffer == nullptr) {
-        return ResolveFileUntimed(name, key, buffer, size_only, capacity);
-    }
-    const auto start = std::chrono::steady_clock::now();
-    const int  size = ResolveFileUntimed(name, key, buffer, size_only, capacity);
-    const double ms = dc2::stutter_timing::ElapsedMs(start);
-    dc2::stutter_timing::frame_file_ms += ms;
-    dc2::stutter_timing::frame_files += 1;
-    if (ms >= 4.0) {
-        CT_LOG_INFO(Data, "timing: read {} ({} bytes) in {:.1f} ms", name ? name : "?", size, ms);
-    }
-    return size;
-}
-
-int ResolveFileUntimed(const char *name, const std::string &key, void *buffer, bool size_only,
-                       std::size_t capacity) {
     if (!index_built) {
         InitCDFile();
     }

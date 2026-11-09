@@ -35,7 +35,6 @@
 #include "gamedata.hpp"
 #include "gfx/gfx.hpp"
 #include "log/log.hpp"
-#include "platform/stutter_timing.hpp"
 #include "mainloop.hpp"
 #include "maintex.hpp"
 #include "map.hpp"
@@ -5310,40 +5309,11 @@ static void MenuItemCharaDataLoadPack(int chara_no, CActionChara *chara, CAction
     }
 }
 
-namespace {
-// Stutter diagnostic: splits a menu preview's finishing step into character builds, equipment setup and the rest.
-// Remove with the other timing logs.
-double preview_setup_unit_ms = 0.0;
-
-struct PreviewFinishTiming {
-    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    double                                builds_before = dc2::stutter_timing::frame_character_ms;
-
-    PreviewFinishTiming() {
-        preview_setup_unit_ms = 0.0;
-    }
-
-    ~PreviewFinishTiming() {
-        const double total = dc2::stutter_timing::ElapsedMs(start);
-
-        if (total < 10.0) {
-            return;
-        }
-
-        const double builds = dc2::stutter_timing::frame_character_ms - builds_before;
-        CT_LOG_INFO(Menu, "timing: preview finish {:.1f} ms: character builds {:.1f}, equipment setup {:.1f}, other {:.1f}", total,
-                    builds, preview_setup_unit_ms, total - builds - preview_setup_unit_ms);
-    }
-};
-} // namespace
-
 int MenuItemCharaDataLoadEndCheck(MENU_BGREAD_INFO2 **info, mgCMemory *stack, CActionChara **chara, int chara_no,
                                   int tex_block, int scene_tex_block) {
     if (!CharacterMenuInputsReady(info)) {
         return 0;
     }
-
-    const PreviewFinishTiming finish_timing;
 
     int                i = {};
     mgCTextureManager *tex_manager = &mgTexManager;
@@ -6248,7 +6218,6 @@ void MenuItemCharaDataLoadEndCheckAfter(MENU_BGREAD_INFO2 **info, int chara_no) 
         {0, -1, -1, -1, -1, -1, -1}
     };
 
-    const auto        setup_start = std::chrono::steady_clock::now();
     CUserDataManager *user_data = MenuUserDataManPtr;
     ROBO_INFO_DATA   *robo = GetRoboPartsInfo(user_data);
 
@@ -6273,7 +6242,6 @@ void MenuItemCharaDataLoadEndCheckAfter(MENU_BGREAD_INFO2 **info, int chara_no) 
 
     dc2::character::SetupUnit(parts, user_data, chara_no, robo,
                               MenuMainScene != nullptr ? &MenuMainScene->loop_se : nullptr);
-    preview_setup_unit_ms += dc2::stutter_timing::ElapsedMs(setup_start);
 }
 
 void InitMainCharaBG(int chara_no, mgCMemory *stack, int mode);

@@ -42,7 +42,6 @@
 #include "mg_drawprim.hpp"
 #include "mg_math.hpp"
 #include "mg_texture.hpp"
-#include "mg_dataset.hpp"
 #include "mglib.hpp"
 #include "nameregi.hpp"
 #include "object/menu/event_item_selection.hpp"
@@ -5896,7 +5895,6 @@ int CMenuItemInfo::IsAskExtend(int select_key, int push_button) {
                         build_up_chara->SetPosition(position);
                         build_up_chara->SetMotion("\x94\xAD\x93\xAE", 0, 1);
                         build_up_chara->Step();
-                        CT_LOG_INFO(Menu, "build-up flash: loaded into the kept-alive arena, animation should play");
                         mgCFrame *frame = build_up_chara->CObjectFrame::frame;
 
                         if (frame != nullptr) {
@@ -12488,98 +12486,9 @@ void MenuItemDrawCore() {
             MenuEffect[1]->Draw();
             mgCTextureManager *tex_manager = &mgTexManager;
 
-            // Diagnostic: why the build-up flash is not visible. Remove once fixed.
-            static int build_up_draw_count = 0;
-
             if (CMenuItemInfoPt->build_up_chara != nullptr) {
-                CActionChara *flash = CMenuItemInfoPt->build_up_chara;
-
-                if (build_up_draw_count % 4 == 0) {
-                    mgCFrame *root = flash->CObjectFrame::frame;
-                    int       frames = root != nullptr ? root->frame_num : -1;
-                    int       visuals = 0;
-
-                    for (int i = 0; root != nullptr && i < root->frame_num; ++i) {
-                        mgCFrame *part = root->GetFrame(i);
-
-                        if (part != nullptr && part->visual != nullptr) {
-                            ++visuals;
-                        }
-                    }
-
-                    float where[4];
-                    int   screen[4] = {};
-                    flash->GetPosition(where);
-                    mgTransWorldScreen(screen, where);
-                    CT_LOG_INFO(Menu,
-                                "build-up flash draw {}: motion frame {:.1f}, show {} draw_off {} alpha {:.2f} fade {} "
-                                "fade_alpha {:.2f}, camera dist {:.1f}, frames {} with visuals {}, pos ({:.1f}, {:.1f}, {:.1f}), "
-                                "screen ({}, {}), tex block {}",
-                                build_up_draw_count, flash->GetNowFrame(nullptr), flash->show, flash->draw_off, flash->alpha,
-                                flash->fade, flash->fade_alpha, flash->GetCameraDist(), frames, visuals, where[0], where[1],
-                                where[2], screen[0] >> 4, screen[1] >> 4, CMenuItemInfoPt->tex_block[2]);
-                }
-
-                // Per-part dump at the start, middle and wrench swap of the flash.
-                if (build_up_draw_count == 0 || build_up_draw_count == 80 || build_up_draw_count == 160) {
-                    mgCFrame *root = flash->CObjectFrame::frame;
-
-                    for (int i = 0; root != nullptr && i < root->frame_num; ++i) {
-                        mgCFrame *part = root->GetFrame(i);
-
-                        if (part == nullptr || part->visual == nullptr) {
-                            continue;
-                        }
-
-                        float world[4][4];
-                        part->GetLWMatrix(world);
-                        const float scale_x = std::sqrt(world[0][0] * world[0][0] + world[0][1] * world[0][1] + world[0][2] * world[0][2]);
-                        const float scale_y = std::sqrt(world[1][0] * world[1][0] + world[1][1] * world[1][1] + world[1][2] * world[1][2]);
-                        const float scale_z = std::sqrt(world[2][0] * world[2][0] + world[2][1] * world[2][1] + world[2][2] * world[2][2]);
-                        const int   kind = part->visual->Iam();
-                        int         vertices = -1;
-                        int         colours = -1;
-                        float       colour[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
-                        int         materials = -1;
-                        float       diffuse[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
-                        bool        textured = false;
-
-                        if (kind == MG_VISUAL_KIND_MDT || kind == MG_VISUAL_KIND_FIX_MDT || kind == MG_VISUAL_KIND_MOTION_MDT) {
-                            auto *mdt = static_cast<mgCVisualMDT *>(part->visual);
-                            vertices = mdt->vertex_num;
-                            colours = mdt->colour_num;
-                            materials = mdt->material_num;
-
-                            if (mdt->colour_num > 0 && mdt->colour != nullptr) {
-                                std::memcpy(colour, mdt->colour[0], sizeof(colour));
-                            }
-
-                            if (mdt->material_num > 0 && mdt->material != nullptr) {
-                                std::memcpy(diffuse, mdt->material[0].diffuse, sizeof(diffuse));
-                                textured = mdt->material[0].texture != nullptr;
-                            }
-                        }
-
-                        const mgCFrameAttr *attr = part->attr;
-                        CT_LOG_INFO(Menu,
-                                    "build-up flash part {} at draw {}: '{}' kind {} vertices {} colours {} colour0 ({:.2f}, {:.2f}, {:.2f}, {:.2f}) "
-                                    "materials {} diffuse0 ({:.2f}, {:.2f}, {:.2f}, {:.2f}) textured {} draw_env {} prmode 0x{:x}, "
-                                    "attr {} draw {} obj_alpha {:.2f} billboard {} blend {} z_test {} z_write {}, world scale ({:.3f}, {:.3f}, {:.3f}) at ({:.1f}, {:.1f}, {:.1f})",
-                                    i, build_up_draw_count, part->name != nullptr ? part->name : "", kind, vertices, colours,
-                                    colour[0], colour[1], colour[2], colour[3], materials, diffuse[0], diffuse[1], diffuse[2],
-                                    diffuse[3], textured, part->visual->draw_env != nullptr, part->visual->prmode, attr != nullptr,
-                                    attr != nullptr ? attr->draw : -1, attr != nullptr ? attr->obj_alpha : -1.0f,
-                                    attr != nullptr ? attr->billboard : -1, attr != nullptr ? attr->alpha_blend : -1,
-                                    attr != nullptr ? attr->z_test : -1, attr != nullptr ? attr->z_write : -1, scale_x, scale_y, scale_z, world[3][0], world[3][1],
-                                    world[3][2]);
-                    }
-                }
-
-                ++build_up_draw_count;
                 tex_manager->ReloadTexture(CMenuItemInfoPt->tex_block[2], (sceVif1Packet *) nullptr);
                 CMenuItemInfoPt->build_up_chara->DrawDirect();
-            } else {
-                build_up_draw_count = 0;
             }
 
             MenuRepairMan->Draw();

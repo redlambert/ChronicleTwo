@@ -29,7 +29,6 @@
 #include "platform/datapacks.hpp"
 #include "platform/texture_catalog.hpp"
 #include "texture_source.hpp"
-#include "platform/stutter_timing.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
 #include "mapselect.hpp"
@@ -956,42 +955,18 @@ int MenuMainInit(MENU_INIT_ARG *arg);
 
 int MenuMainExit();
 
-namespace {
-// Stutter diagnostic: splits a slow menu frame into its parts. Remove with the other timing logs.
-double menu_page_key_ms = 0.0;
-double menu_page_draw_ms = 0.0;
-double menu_refresh_ms = 0.0;
-double menu_key_ms = 0.0;
-int    menu_key_page = -1;
-
-void ReportMakePrefetch();
-} // namespace
-
 int MenuMainLoop() {
     int next_mode = MenuMainKey();
     MenuMainDraw();
     return next_mode;
 }
 
-int MenuMainKeyCore();
+namespace {
+void ReportMakePrefetch();
+} // namespace
 
 int MenuMainKey() {
-    static bool announced = false;
-    if (!announced) {
-        announced = true;
-        CT_LOG_INFO(Menu, "timing: menu frame timers on (menu frames over 20 ms are reported)");
-    }
     ReportMakePrefetch();
-    menu_key_page = MenuCommonInfo->now_mode;
-    menu_page_key_ms = 0.0;
-    menu_refresh_ms = 0.0;
-    const auto key_start = std::chrono::steady_clock::now();
-    const int  result = MenuMainKeyCore();
-    menu_key_ms = dc2::stutter_timing::ElapsedMs(key_start);
-    return result;
-}
-
-int MenuMainKeyCore() {
     int   result = {};
     short open_type = {};
     int   menu = {};
@@ -1007,9 +982,7 @@ int MenuMainKeyCore() {
         menu_debug_flag ^= 1;
     }
 
-    const auto page_key_start = std::chrono::steady_clock::now();
     result = menu_keyfunctbl[MenuCommonInfo->now_mode]();
-    menu_page_key_ms = dc2::stutter_timing::ElapsedMs(page_key_start);
 
     switch (result) {
         case 1:
@@ -1076,9 +1049,7 @@ int MenuMainKeyCore() {
 
     if (refresh_cnt >= PAL_TIMING(25, 30)) {
         refresh_cnt = 0;
-        const auto refresh_start = std::chrono::steady_clock::now();
         UserDataRefresh();
-        menu_refresh_ms = dc2::stutter_timing::ElapsedMs(refresh_start);
     }
 
     MenuDoubleDrawCheck = false;
@@ -1088,20 +1059,6 @@ int MenuMainKeyCore() {
 void MenuMainDraw() {
     mgCDrawPrim *prim = {};
     int          next_page = {};
-    const auto   draw_start = std::chrono::steady_clock::now();
-    menu_page_draw_ms = 0.0;
-    struct DrawTiming {
-        std::chrono::steady_clock::time_point start;
-        ~DrawTiming() {
-            const double draw_ms = dc2::stutter_timing::ElapsedMs(start);
-            if (menu_key_ms + draw_ms >= 20.0) {
-                CT_LOG_INFO(Menu,
-                            "timing: menu frame on page {}: step {:.1f} ms (page step {:.1f}, data refresh {:.1f}), draw {:.1f} ms (page draw {:.1f})",
-                            menu_key_page, menu_key_ms, menu_page_key_ms, menu_refresh_ms, draw_ms, menu_page_draw_ms);
-            }
-            menu_key_ms = 0.0;
-        }
-    } const draw_timing{draw_start};
 
     if (!MenuDoubleDrawCheck) {
         prim = GetMenuPrim();
@@ -1110,9 +1067,7 @@ void MenuMainDraw() {
         DrawMenuFillBox(0x80, 0, 0, 0);
         prim->offset_x = 0;
         prim->offset_y = 0;
-        const auto page_draw_start = std::chrono::steady_clock::now();
         menu_drawfunctbl[MenuCommonInfo->now_mode]();
-        menu_page_draw_ms = dc2::stutter_timing::ElapsedMs(page_draw_start);
 
         if (menu_debug_flag != 0) {
             MenuDebugModeDraw();
@@ -2902,7 +2857,6 @@ void PrefetchMakeBackground() {
             make_prefetch_result_us = static_cast<int>(elapsed.count());
             make_prefetch_running = false;
         });
-        CT_LOG_INFO(Menu, "make prefetch: started on a silent worker");
     } catch (const std::exception &error) {
         CT_LOG_WARN(Menu, "make prefetch: no worker thread: {}", error.what());
         make_prefetch_running = false;

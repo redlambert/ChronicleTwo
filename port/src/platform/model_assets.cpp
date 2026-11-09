@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -33,7 +32,6 @@
 #include "dynamicanime.hpp"
 #include "effect.hpp"
 #include "gameutil.hpp"
-#include "log/log.hpp"
 #include "mg_dataset.hpp"
 #include "mg_math.hpp"
 #include "mg_shadow.hpp"
@@ -497,12 +495,6 @@ std::shared_ptr<Document> SelectModel(const std::shared_ptr<Document> &source, s
     {
         std::lock_guard lock(selected_models_mutex);
         selected_models.insert_or_assign(key, SelectedModelEntry{.source = source, .selected = selected});
-        static bool logged = false;
-
-        if (!logged) {
-            logged = true;
-            CT_LOG_INFO(Data, "timing: selected models cached from now on");
-        }
     }
 
     return selected;
@@ -584,11 +576,8 @@ std::shared_ptr<const Json> ParseGameplay(const std::filesystem::path &gltf, std
             return found->second.game;
         }
     }
-    const auto start = std::chrono::steady_clock::now();
-    auto       game = ParseGameplayUncached(gltf, error, identity);
-    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    auto game = ParseGameplayUncached(gltf, error, identity);
     if (game) {
-        CT_LOG_INFO(Data, "timing: gameplay json {} parsed in {:.1f} ms (cached from now on)", gltf.generic_string(), ms);
         std::lock_guard lock(gameplay_cache_mutex);
         gameplay_cache.insert_or_assign(key, GameplayEntry{game, identity});
     }
@@ -1043,12 +1032,6 @@ std::shared_ptr<const Json> CachedMeshIdentity(const Document &document, const f
     {
         std::lock_guard lock(mesh_identity_cache_mutex);
         mesh_identity_cache.insert_or_assign(key, MeshIdentityEntry{.storage = document.storage, .custom = document.custom, .identity = identity});
-        static bool logged = false;
-
-        if (!logged) {
-            logged = true;
-            CT_LOG_INFO(Data, "timing: mesh metadata cached from now on");
-        }
     }
 
     return identity;
@@ -2259,24 +2242,6 @@ bool StandardScaleOrder(Document &document, const fastgltf::Node &node) {
 
 mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &load, std::string &error) {
     CT_PROFILE_ZONE("Instantiate model");
-    // Stutter diagnostic: splits a model build into its steps. Remove with the other timing logs.
-    using timing_clock = std::chrono::steady_clock;
-    const auto instantiate_start = timing_clock::now();
-    double     mesh_ms = 0.0;
-    double     skin_ms = 0.0;
-    double     bounds_ms = 0.0;
-    double     faces_ms = 0.0;
-    double     publish_ms = 0.0;
-    double     identity_ms = 0.0;
-    double     frames_ms = 0.0;
-    double     hierarchy_ms = 0.0;
-    double     matrices_ms = 0.0;
-    double     attrs_ms = 0.0;
-    int        mesh_count = 0;
-    long long  vertex_count = 0;
-    const auto since = [](timing_clock::time_point start) {
-        return std::chrono::duration<double, std::milli>(timing_clock::now() - start).count();
-    };
     try {
         const auto &frames = document->metadata.at("frames");
         if (frames.empty() || (document->frame_nodes.empty() && document->asset.nodes.size() < document->node_offset + frames.size())) {
@@ -2291,7 +2256,6 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             table[index] = native + index;
         }
         for (std::size_t index = 0; index < frames.size(); ++index) {
-            const auto frame_start = timing_clock::now();
             const auto &detail = frames.at(index);
             if (detail.value("id", index) != index) {
                 throw std::runtime_error("noncontiguous frame identities");
@@ -2354,11 +2318,9 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             if (!node.visible || !logical.visible) {
                 native[index].attr->draw = MG_FRAME_DRAW_SKIP_CHILDREN;
             }
-            frames_ms += since(frame_start);
             if (!node.meshIndex) {
                 continue;
             }
-            const auto identity_start = timing_clock::now();
             const auto  mesh_identity = CachedMeshIdentity(*document, node, ModelInteger<std::size_t>(detail.at("mdt")));
             const Json &mesh = *mesh_identity;
             int        type = VisualType(load.visual_type, name);
@@ -2366,9 +2328,7 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 type = MG_VISUAL_CREATE_FIX_MDT;
             }
             auto [visual, clone_kind] = Visual(memory, type);
-            identity_ms += since(identity_start);
             visual->texture_manager = &textures;
-            auto step_start = timing_clock::now();
             // Mesh identities of documents read by path are cached, so their addresses are stable keys.
             const bool                       reusable = !document->relative.empty();
             std::shared_ptr<const MeshImage> image;
@@ -2384,25 +2344,14 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 std::lock_guard lock(mesh_images_mutex);
                 mesh_images.insert_or_assign(mesh_identity.get(),
                                              MeshImageEntry{.identity = mesh_identity, .image = std::make_shared<const MeshImage>(std::move(capture))});
-                static bool logged = false;
-                if (!logged) {
-                    logged = true;
-                    CT_LOG_INFO(Data, "timing: converted meshes cached from now on");
-                }
             }
-            mesh_ms += since(step_start);
-            ++mesh_count;
-            vertex_count += visual->vertex_num;
             if (type == MG_VISUAL_CREATE_MOTION_MDT) {
                 auto *motion = static_cast<mgCVisualMotionMDT *>(visual);
                 motion->frame = table;
                 motion->frame_id = static_cast<int>(index);
                 motion->base_matrix = matrices;
-                step_start = timing_clock::now();
                 Skin(*document, node, mesh, *motion, memory);
-                skin_ms += since(step_start);
             }
-            step_start = timing_clock::now();
             native[index].SetVisual(visual);
             float maximum[4];
             float minimum[4];
@@ -2422,18 +2371,13 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
             if (type == MG_VISUAL_CREATE_MOTION_MDT) {
                 static_cast<mgCVisualMotionMDT *>(visual)->SetBaseBox(maximum, minimum);
             }
-            bounds_ms += since(step_start);
-            step_start = timing_clock::now();
             if (type == MG_VISUAL_CREATE_SHADOW_MDT || type == MG_VISUAL_CREATE_SHADOW_FIX_MDT) {
                 ShadowFaces(*visual);
             }
             RefreshFaces(*visual);
-            faces_ms += since(step_start);
-            step_start = timing_clock::now();
             if (!dc2::render::VisualCloneInputs::Publish(memory, *visual, clone_kind)) {
                 throw std::runtime_error("invalid visual clone inputs");
             }
-            publish_ms += since(step_start);
         }
         for (std::size_t index = 0; index < frames.size(); ++index) {
             auto &frame = native[index];
@@ -2441,7 +2385,6 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 throw std::runtime_error("invalid frame clone inputs");
             }
         }
-        auto tail_start = timing_clock::now();
         std::vector<int> parents(frames.size(), -1);
         for (std::size_t index = 0; index < frames.size(); ++index) {
             for (const auto child : ContentNode(*document, index).children) {
@@ -2463,28 +2406,13 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 native[index].SetParent(native + parents[index]);
             }
         }
-        hierarchy_ms += since(tail_start);
-        tail_start = timing_clock::now();
         native->frame_list = table;
         native->frame_num = static_cast<int>(frames.size());
         native->init_matrix = matrices;
         for (std::size_t index = 0; index < frames.size(); ++index) {
             native[index].GetLWMatrix(matrices[index]);
         }
-        matrices_ms += since(tail_start);
-        tail_start = timing_clock::now();
         mgSetFrameAttr(native, 1);
-        attrs_ms += since(tail_start);
-        if (const double total_ms = since(instantiate_start); total_ms >= 10.0) {
-            CT_LOG_INFO(Data,
-                        "timing: instantiate {} total {:.1f} ms: {} frames, {} meshes, {} vertices, mesh {:.1f}, skin {:.1f}, "
-                        "bounds {:.1f}, faces {:.1f}, publish {:.1f}, frame setup {:.1f}, mesh metadata {:.1f}, hierarchy {:.1f}, "
-                        "matrices {:.1f}, attributes {:.1f}, rest {:.1f}",
-                        document->relative.generic_string(), total_ms, frames.size(), mesh_count, vertex_count, mesh_ms, skin_ms,
-                        bounds_ms, faces_ms, publish_ms, frames_ms, identity_ms, hierarchy_ms, matrices_ms, attrs_ms,
-                        total_ms - mesh_ms - skin_ms - bounds_ms - faces_ms - publish_ms - frames_ms - identity_ms - hierarchy_ms -
-                            matrices_ms - attrs_ms);
-        }
         error.clear();
         return native;
     } catch (const std::exception &exception) {
@@ -3267,50 +3195,8 @@ Json OriginalMotionName(const Json &custom, const Json &argument) {
 /**
  * Applies an ordered gameplay profile to native frames and gameplay records.
  */
-/**
- * Temporary stutter diagnostics: adds up the time each build stage takes and logs one line per build.
- */
-struct BuildStageTimes {
-    std::string                                         label;
-    std::vector<std::pair<std::string, double>>         stages;
-    std::chrono::steady_clock::time_point               start = std::chrono::steady_clock::now();
-
-    void Add(std::string_view stage, double ms) {
-        for (auto &[name, total] : stages) {
-            if (name == stage) {
-                total += ms;
-                return;
-            }
-        }
-        stages.emplace_back(std::string(stage), ms);
-    }
-
-    ~BuildStageTimes() {
-        const auto total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        std::string line;
-        for (const auto &[name, ms] : stages) {
-            line += std::format(" {} {:.1f}", name, ms);
-        }
-        CT_LOG_INFO(Data, "timing: stages {} total {:.1f} ms:{}", label, total, line);
-    }
-};
-
-/**
- * Times one stage of a build and adds it to the build's totals when the scope ends.
- */
-struct BuildStageScope {
-    BuildStageTimes                       &times;
-    std::string_view                       stage;
-    std::chrono::steady_clock::time_point  start = std::chrono::steady_clock::now();
-
-    ~BuildStageScope() {
-        times.Add(stage, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-    }
-};
-
 void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &document, std::string_view profile,
                       std::string_view skin_name, const CharacterLoadOptions &options, bool skin) {
-    BuildStageTimes stage_times{.label = (skin ? "skin " : "character ") + document->relative.generic_string(), .stages = {}};
     if (!options.model_memory) {
         throw std::runtime_error("character model arena required");
     }
@@ -3375,7 +3261,6 @@ void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &d
         if (skin && tag_name != "MODEL" && tag_name != "MOTION" && tag_name != "IMG" && tag_name != "IMG_END") {
             continue;
         }
-        BuildStageScope stage_scope{.times = stage_times, .stage = tag_name, .start = std::chrono::steady_clock::now()};
         const auto                        &args = command.at("args");
         std::vector<std::string>           strings;
         auto                               stack = Arguments(args, strings);
@@ -3435,13 +3320,9 @@ void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &d
                 if (!selected_model || !character.CObjectFrame::frame) {
                     continue;
                 }
-                auto           scene_start = std::chrono::steady_clock::now();
                 auto          *replacement = Scene(document, *selected_model, options, PortCharacterMetadataVisualTypes(true), &character);
-                stage_times.Add("skin.scene", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scene_start).count());
                 tagMOTION_TYPE replacement_motion{};
-                const auto     bind_start = std::chrono::steady_clock::now();
                 BuildMotion(document, replacement_motion, memory, std::nullopt, bind, weights, selected_model);
-                stage_times.Add("skin.bindpose", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bind_start).count());
                 auto *root = character.CObjectFrame::frame;
                 Rebind(*replacement, *root, replacement_motion.base_matrices);
                 for (int index = 0; index < replacement->frame_num; ++index) {
@@ -3956,11 +3837,7 @@ bool LoadTextureSet(const std::filesystem::path &gltf, std::size_t index, mgCTex
 
 bool LoadCharacter(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, const CharacterLoadOptions &options, std::string &error) {
     return Attempt(error, [&] {
-        const auto read_start = std::chrono::steady_clock::now();
-        auto       document = Read(gltf);
-        CT_LOG_INFO(Data, "timing: lookup {} in {:.1f} ms", gltf.generic_string(),
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read_start).count());
-        CharacterProfile(character, document, profile, {}, options, false);
+        CharacterProfile(character, Read(gltf), profile, {}, options, false);
     });
 }
 
@@ -3972,11 +3849,7 @@ bool LoadCharacter(CCharacter2 &character, std::span<const std::byte> gltf, cons
 
 bool LoadSkin(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, std::string_view name, const CharacterLoadOptions &options, std::string &error) {
     return Attempt(error, [&] {
-        const auto read_start = std::chrono::steady_clock::now();
-        auto       document = Read(gltf);
-        CT_LOG_INFO(Data, "timing: lookup {} in {:.1f} ms", gltf.generic_string(),
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read_start).count());
-        CharacterProfile(character, document, profile, name, options, true);
+        CharacterProfile(character, Read(gltf), profile, name, options, true);
     });
 }
 

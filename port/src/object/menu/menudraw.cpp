@@ -1,7 +1,6 @@
 #include "menudraw.hpp"
 #include "mw_runtime.h"
 
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -4870,22 +4869,10 @@ void MenuDrawParamStep() {
 void CPosDataManage::FormDraw() {
     int               state = -1;
     CMenuPosDataForm *form = GetDrawTopList();
-    // Stutter diagnostic: names any menu form whose drawing is slow. Remove with the other timing logs.
-    static bool announced = false;
-    if (!announced) {
-        announced = true;
-        CT_LOG_INFO(Menu, "timing: menu form timers on (forms over 10 ms are reported)");
-    }
 
     if (form != nullptr) {
         do {
-            const auto form_start = std::chrono::steady_clock::now();
             form->MenuFormDraw(state);
-            const double form_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - form_start).count();
-            if (form_ms >= 10.0) {
-                CT_LOG_INFO(Menu, "timing: menu form '{}' (type {}) drew in {:.1f} ms", form->name != nullptr ? form->name : "",
-                            static_cast<int>(form->dtype), form_ms);
-            }
             form = form->next;
 
             if (form == nullptr) {
