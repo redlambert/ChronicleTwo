@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <print>
@@ -2364,24 +2365,32 @@ namespace {
 /** Catalog entries decoded together ahead of registration. */
 constexpr std::size_t kPrefetchBatch = 32;
 
-/**
- * Logs, once per name, the files the menu wallpapers come from, so replacement art can be made for them.
- */
-void LogMenuWallpaperSource(const texture_catalog::Source &source, const texture_catalog::Entry &entry) {
-    static constexpr std::array<std::string_view, 4> kWallpapers = {"bg16", "inv_bg", "chr_bg", "op_bg"};
-    static std::array<bool, kWallpapers.size()>      logged{};
-    const std::string                                name = DecodeName(entry.name);
+constexpr std::array<std::string_view, 4> kMenuWallpapers = {"bg16", "inv_bg", "chr_bg", "op_bg"};
+std::array<bool, kMenuWallpapers.size()>  menu_wallpaper_tiled{};
 
-    for (std::size_t i = 0; i < kWallpapers.size(); ++i) {
-        if (logged[i] || name != kWallpapers[i]) {
+/**
+ * Records whether a menu wallpaper's image comes from a datapack, whose art is drawn repeating into the widescreen
+ * sides rather than mirrored, and logs where each wallpaper comes from once.
+ */
+void NoteMenuWallpaper(const texture_catalog::Source &source, const texture_catalog::Entry &entry) {
+    static std::array<bool, kMenuWallpapers.size()> logged{};
+    const std::string                               name = DecodeName(entry.name);
+
+    for (std::size_t i = 0; i < kMenuWallpapers.size(); ++i) {
+        if (name != kMenuWallpapers[i]) {
             continue;
         }
-        logged[i] = true;
         const std::string image =
             !entry.variants.empty() && !entry.variants.front().levels.empty() ? entry.variants.front().levels.front().path : "";
-        CT_LOG_INFO(Data, "menu wallpaper: {} is picture {} of {}, image {} ({}x{} texels, {} variants)", name,
-                    entry.picture, source.source, image.empty() ? "none" : image, entry.width, entry.height,
-                    entry.variants.size());
+        const std::filesystem::path relative = std::filesystem::path(source.source).parent_path() / image;
+        menu_wallpaper_tiled[i] = !image.empty() && datapacks::Resolve(relative).has_value();
+        if (!logged[i]) {
+            logged[i] = true;
+            CT_LOG_INFO(Data, "menu wallpaper: {} is picture {} of {}, image {} ({}x{} texels); {}", name, entry.picture,
+                        source.source, image.empty() ? "none" : image, entry.width, entry.height,
+                        menu_wallpaper_tiled[i] ? "replaced by a datapack, so the sides repeat it"
+                                                : "original art, so the sides mirror it");
+        }
     }
 }
 
@@ -2424,7 +2433,7 @@ int EnterSource(mgCTextureManager *manager, int block, const texture_catalog::So
         }
         const int group = entry->block;
         const int target = block + group;
-        LogMenuWallpaperSource(source, *entry);
+        NoteMenuWallpaper(source, *entry);
         if (mgCTexture *texture = EnterCatalog(manager, target, *entry, decoder, identity, source.source)) {
             last_block = std::max(last_block, static_cast<int>(texture->block));
             if (info && group < MG_TEXTURE_IMG_GROUP_MAX && info->block[group] < 0) {
@@ -2445,6 +2454,15 @@ int EnterSource(mgCTextureManager *manager, int block, const texture_catalog::So
     return difference <= std::numeric_limits<int>::max() ? static_cast<int>(difference) : 0;
 }
 } // namespace
+
+bool MgMenuWallpaperTiled(const char *name) {
+    for (std::size_t i = 0; i < kMenuWallpapers.size(); ++i) {
+        if (name != nullptr && kMenuWallpapers[i] == name) {
+            return menu_wallpaper_tiled[i];
+        }
+    }
+    return false;
+}
 
 int MgTextureEnterDocument(mgCTextureManager *manager, std::string_view relative_json_path, int block,
                            mgCMemory *stack, mgCEnterIMGInfo *info) {

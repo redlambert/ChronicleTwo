@@ -1011,3 +1011,9 @@ mgIMG_HEADER mgGetIMGHeader(char *img, int index);
  */
 int mgLoadImage(u_int *packet, int base, int format, int width, u_long128 *image, int quadwords, int x, int y,
                 int w, int h);
+
+/**
+ * Whether the named menu wallpaper (bg16, inv_bg, chr_bg or op_bg) was last loaded from a datapack image, whose
+ * art repeats into the widescreen sides instead of being mirrored.
+ */
+bool MgMenuWallpaperTiled(const char *name);
