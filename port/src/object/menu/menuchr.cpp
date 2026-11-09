@@ -8123,12 +8123,13 @@ constexpr int   kChangeSparkAlpha = 0x50;
  * One star of the character-change splash.
  */
 struct alignas(16) ChangeSpark {
-    float pos[4]; /**< Offset from the character's position. */
-    float vel[4]; /**< Per-frame movement. */
-    float size;   /**< Screen sprite size before twinkling. */
-    float phase;  /**< Twinkle phase in radians. */
-    int   age;    /**< Frames since the star spawned. */
-    int   life;   /**< Frames the star lives. */
+    float pos[4];  /**< Offset from the character's position. */
+    float vel[4];  /**< Per-frame movement. */
+    float from[4]; /**< Gathering stars: offset the star is pulled in from. */
+    float size;    /**< Screen sprite size before twinkling. */
+    float phase;   /**< Twinkle phase in radians. */
+    int   age;     /**< Frames since the star spawned. */
+    int   life;    /**< Frames the star lives. */
 };
 
 ChangeSpark change_sparks[kChangeSparkMax];
@@ -8139,13 +8140,24 @@ int         change_fade_frames = 0;
 int         change_spark_frames = 0;
 
 // Glow-up before a quick change, in gameplay ticks (30 a second).
-constexpr int kWindUpTicks = 4;
-bool          windup_active = false;
-bool          windup_ready = false;
-int           windup_request = -1;
-int           windup_ticks = 0;
-int           windup_loop = -1;
-int           windup_poll_frame = -1;
+constexpr int kWindUpTicks = 8;
+// Glow per wind-up tick, as a point on the rising half of the white pulse (kWindUpTicks is solid white):
+// a flicker that quickens and then locks on.
+constexpr int kWindUpGlow[kWindUpTicks] = {3, 1, 5, 2, 6, 4, 7, 8};
+// Stars pulled in toward the character during the wind-up, arriving as the swap happens.
+constexpr int kGatherSparksPerTick = 4;
+constexpr int kGatherSpawnTicks = kWindUpTicks - 2;
+constexpr int kGatherSparkMax = kGatherSparksPerTick * kGatherSpawnTicks;
+// Kept apart from change_sparks, which also time the cool-down between quick changes.
+ChangeSpark gather_sparks[kGatherSparkMax];
+int         gather_spark_count = 0;
+
+bool windup_active = false;
+bool windup_ready = false;
+int  windup_request = -1;
+int  windup_ticks = 0;
+int  windup_loop = -1;
+int  windup_poll_frame = -1;
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
@@ -8381,10 +8393,11 @@ void StepChangeSparks() {
 }
 
 /**
- * Draws the stars as soft additive four-pointed fans, depth-tested against the scene.
+ * Draws stars as soft additive four-pointed fans, depth-tested against the scene. Bursting stars flash in and
+ * fade out over their life; gathering stars fade in and stay bright until they arrive.
  */
-void DrawChangeSparks(const sceVu0FVECTOR base) {
-    if (change_spark_count <= 0) {
+void DrawSparks(const ChangeSpark *sparks, int count, const sceVu0FVECTOR base, bool gathering) {
+    if (count <= 0) {
         return;
     }
 
@@ -8399,16 +8412,17 @@ void DrawChangeSparks(const sceVu0FVECTOR base) {
     prim.Shading(1);
     prim.AlphaBlend(MG_ALPHA_BLEND_ADD);
 
-    for (int i = 0; i < change_spark_count; i++) {
-        ChangeSpark  &spark = change_sparks[i];
-        const float   t = static_cast<float>(spark.age) / static_cast<float>(spark.life);
-        const float   envelope = t < 0.08f ? t / 0.08f : std::min(1.0f, 2.0f - 2.0f * t);
-        const float   twinkle = 0.75f + 0.25f * sinf(spark.phase + 0.9f * static_cast<float>(spark.age));
-        const int     alpha = static_cast<int>(static_cast<float>(kChangeSparkAlpha) * envelope * twinkle);
-        const float   size = spark.size * twinkle;
-        int           top_left[4];
-        int           bottom_right[4];
-        sceVu0FVECTOR world;
+    for (int i = 0; i < count; i++) {
+        const ChangeSpark &spark = sparks[i];
+        const float        t = static_cast<float>(spark.age) / static_cast<float>(spark.life);
+        const float        envelope = gathering ? std::min(1.0f, 0.25f + t * 1.5f)
+                                                : (t < 0.08f ? t / 0.08f : std::min(1.0f, 2.0f - 2.0f * t));
+        const float        twinkle = 0.75f + 0.25f * sinf(spark.phase + 0.9f * static_cast<float>(spark.age));
+        const int          alpha = static_cast<int>(static_cast<float>(kChangeSparkAlpha) * envelope * twinkle);
+        const float        size = spark.size * twinkle;
+        int                top_left[4];
+        int                bottom_right[4];
+        sceVu0FVECTOR      world;
         world[0] = base[0] + spark.pos[0];
         world[1] = base[1] + spark.pos[1];
         world[2] = base[2] + spark.pos[2];
@@ -8440,6 +8454,13 @@ void DrawChangeSparks(const sceVu0FVECTOR base) {
 
         prim.End();
     }
+}
+
+/**
+ * Draws the burst of stars around a quick change.
+ */
+void DrawChangeSparks(const sceVu0FVECTOR base) {
+    DrawSparks(change_sparks, change_spark_count, base, false);
 }
 
 } // namespace
@@ -8475,6 +8496,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
             windup_active = false;
             windup_ready = false;
             windup_request = -1;
+            gather_spark_count = 0;
             return -1;
         }
 
@@ -8486,6 +8508,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
         windup_active = false;
         windup_ready = false;
         windup_request = -1;
+        gather_spark_count = 0;
         return held;
     }
 
@@ -8498,10 +8521,12 @@ int PortQuickChangeWindUp(int request, bool eligible) {
     windup_request = request;
     windup_ticks = 0;
     windup_loop = PortLoopNo;
+    gather_spark_count = 0;
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: glowing up for {} ticks before the swap", kWindUpTicks);
+        CT_LOG_INFO(Menu, "quick change: charging up for {} ticks (flicker and gathering stars) before the swap",
+                    kWindUpTicks);
     }
     return -1;
 }
@@ -8509,7 +8534,50 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 namespace {
 
 /**
- * Raises the current character's white glow while a glow-up runs, and drops a glow-up that stopped being polled.
+ * Spawns one star on a ring around the character, to be pulled in to the waist by the end of the wind-up.
+ */
+void SpawnGatherSpark(CActionChara *chara, int ticks_left) {
+    if (gather_spark_count >= kGatherSparkMax || ticks_left <= 0) {
+        return;
+    }
+
+    ChangeSpark &spark = gather_sparks[gather_spark_count++];
+    const float  height = chara->GetBodyHeight();
+    const float  angle = fRand(2.0f * std::numbers::pi_v<float>);
+    const float  reach = (0.6f + fRand(0.35f)) * height;
+    spark.from[0] = reach * cosf(angle);
+    spark.from[1] = (0.05f + fRand(1.0f)) * height;
+    spark.from[2] = reach * sinf(angle);
+    spark.from[3] = 0.0f;
+    std::copy_n(spark.from, 4, spark.pos);
+    spark.vel[0] = 0.0f;
+    spark.vel[1] = 0.5f * height;
+    spark.vel[2] = 0.0f;
+    spark.vel[3] = 0.0f;
+    spark.size = 2.5f + fRand(2.0f);
+    spark.phase = fRand(2.0f * std::numbers::pi_v<float>);
+    spark.age = 0;
+    spark.life = ticks_left;
+}
+
+/**
+ * Pulls the gathering stars in, speeding up as they near the waist (kept in vel[1]).
+ */
+void StepGatherSparks() {
+    for (int i = 0; i < gather_spark_count; i++) {
+        ChangeSpark &spark = gather_sparks[i];
+        spark.age = std::min(spark.age + 1, spark.life);
+        const float t = static_cast<float>(spark.age) / static_cast<float>(spark.life);
+        const float pull = t * t;
+        spark.pos[0] = spark.from[0] * (1.0f - pull);
+        spark.pos[1] = spark.from[1] + (spark.vel[1] - spark.from[1]) * pull;
+        spark.pos[2] = spark.from[2] * (1.0f - pull);
+    }
+}
+
+/**
+ * Charges the current character up while a wind-up runs: a quickening white flicker that locks on, and stars
+ * pulled in to the waist. Drops a wind-up that stopped being polled.
  */
 void StepQuickChangeWindUp() {
     if (!windup_active) {
@@ -8525,14 +8593,29 @@ void StepQuickChangeWindUp() {
         windup_active = false;
         windup_ready = false;
         windup_request = -1;
+        gather_spark_count = 0;
         return;
     }
 
-    // The rising half of one white pulse; the change effect plays the falling half on the new character.
     windup_ticks = std::min(windup_ticks + 1, kWindUpTicks);
+
+    // Points on the rising half of one white pulse; the change effect plays the falling half on the new character.
     CPalletAnime &fade = chara->pallet[ACTION_PALLET_MAX - 1];
     fade.SetAnim(0xFF, 0xFF, 0xFF, 1, kWindUpTicks * 2, 0);
-    fade.elapsed = windup_ticks;
+    fade.elapsed = kWindUpGlow[windup_ticks - 1];
+
+    StepGatherSparks();
+
+    if (windup_ticks <= kGatherSpawnTicks) {
+        for (int i = 0; i < kGatherSparksPerTick; i++) {
+            // Each lands on the last wind-up tick, the final frame drawn before the swap.
+            SpawnGatherSpark(chara, kWindUpTicks - windup_ticks);
+        }
+    }
+
+    sceVu0FVECTOR base;
+    chara->GetPosition(base);
+    DrawSparks(gather_sparks, gather_spark_count, base, true);
 
     if (windup_ticks >= kWindUpTicks) {
         windup_ready = true;
