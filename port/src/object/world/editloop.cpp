@@ -39,6 +39,7 @@
 #include "nd_meswin.hpp"
 #include "nowload.hpp"
 #include "object/world/data_packets.hpp"
+#include "object/character/quick_change_presentation.hpp"
 #include "padcontrol.hpp"
 #include "savedata.hpp"
 #include "scene.hpp"
@@ -1656,7 +1657,10 @@ int EditLoop() {
         if (open_menu == 0 && LockChara == 0 && sgMenuOpenEnable() != 0 && change_mode == 0) {
             menu_requested = PadCtrl.Btn(PAD_BTN_MENU) != 0 || sgGetItemOver() != 0;
             menu_button = PadCtrl.Btn(PAD_BTN_MENU);
-            quick_change = EditOnGround() != 0 && PadCtrl.Btn(PAD_BTN_QUICK_CHANGE) != 0 && !SubGameRunning();
+            // A glowing-up quick change comes back as the press each tick until it fires or is dropped.
+            quick_change = EditOnGround() != 0 &&
+                           (PadCtrl.Btn(PAD_BTN_QUICK_CHANGE) != 0 || PortQuickChangeWindUpHeld() >= 0) &&
+                           !SubGameRunning();
             CScene *const fade_scene = MainScene;
             int           cross_fading = fade_scene->fade.NowFade() && fade_scene->fade.cross;
 
@@ -1672,6 +1676,10 @@ int EditLoop() {
 
             if (IsWalkMode() == 0 || GetPauseFlag() != 0) {
                 quick_change = 0;
+            }
+
+            if (LoopMode == EDIT_LOOP_WALK) {
+                quick_change = PortQuickChangeWindUp(quick_change != 0 ? 0 : -1, quick_change != 0) >= 0;
             }
 
             menu_enabled = 1;

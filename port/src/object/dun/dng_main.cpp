@@ -24,6 +24,7 @@
 #include "dng_event.hpp"
 #include "dng_hud.hpp"
 #include "dng_main.hpp"
+#include "object/character/quick_change_presentation.hpp"
 #include "dng_object.hpp"
 #include "dng_status.hpp"
 #include "dungeon_articles.hpp"
@@ -2906,8 +2907,17 @@ int dc2::dungeon::MainKeyCore() {
         unit = DNG_CHANGE_UNIT_RIDE;
     }
 
+    // A glowing-up quick change comes back as the request each tick until it fires or is dropped.
+    if (const int held = PortQuickChangeWindUpHeld(); held >= 0) {
+        unit = held;
+    }
+
     if (MainChara__2->CheckRunEvent() && unit >= 0 && !dead) {
-        unit = ChangeSetUnit(unit);
+        unit = PortQuickChangeWindUp(unit, dc2::dungeon::ChangeSetUnitCore(unit) >= 0);
+
+        if (unit >= 0) {
+            unit = ChangeSetUnit(unit);
+        }
 
         if (unit >= 0) {
             VoiceUnit.StopVoice(10);

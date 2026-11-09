@@ -8138,6 +8138,15 @@ int         change_fx_loop = -1;
 int         change_fade_frames = 0;
 int         change_spark_frames = 0;
 
+// Glow-up before a quick change, in gameplay ticks (30 a second).
+constexpr int kWindUpTicks = 4;
+bool          windup_active = false;
+bool          windup_ready = false;
+int           windup_request = -1;
+int           windup_ticks = 0;
+int           windup_loop = -1;
+int           windup_poll_frame = -1;
+
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
 
@@ -8450,8 +8459,87 @@ void PortCancelQuickChangeBanner() {
 }
 
 bool PortQuickChangeCoolingDown() {
-    return ChangeEffectRunning();
+    return ChangeEffectRunning() || windup_active;
 }
+
+int PortQuickChangeWindUpHeld() {
+    return windup_active ? windup_request : -1;
+}
+
+int PortQuickChangeWindUp(int request, bool eligible) {
+    windup_poll_frame = mgPortFrameCount();
+
+    if (windup_active) {
+        if (!eligible) {
+            // The glow falls back on its own once it is no longer reapplied.
+            windup_active = false;
+            windup_ready = false;
+            windup_request = -1;
+            return -1;
+        }
+
+        if (!windup_ready) {
+            return -1;
+        }
+
+        const int held = windup_request;
+        windup_active = false;
+        windup_ready = false;
+        windup_request = -1;
+        return held;
+    }
+
+    if (request < 0 || !eligible || ChangeEffectRunning()) {
+        return request;
+    }
+
+    windup_active = true;
+    windup_ready = false;
+    windup_request = request;
+    windup_ticks = 0;
+    windup_loop = PortLoopNo;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "quick change: glowing up for {} ticks before the swap", kWindUpTicks);
+    }
+    return -1;
+}
+
+namespace {
+
+/**
+ * Raises the current character's white glow while a glow-up runs, and drops a glow-up that stopped being polled.
+ */
+void StepQuickChangeWindUp() {
+    if (!windup_active) {
+        return;
+    }
+
+    CScene       *scene = GetMainScene();
+    const int     index = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
+    CActionChara *chara = scene != nullptr ? static_cast<CActionChara *>(scene->GetCharacter(index)) : nullptr;
+
+    if (PortLoopNo != windup_loop || MenuPosData != nullptr || windup_poll_frame != mgPortFrameCount() ||
+        chara == nullptr) {
+        windup_active = false;
+        windup_ready = false;
+        windup_request = -1;
+        return;
+    }
+
+    // The rising half of one white pulse; the change effect plays the falling half on the new character.
+    windup_ticks = std::min(windup_ticks + 1, kWindUpTicks);
+    CPalletAnime &fade = chara->pallet[ACTION_PALLET_MAX - 1];
+    fade.SetAnim(0xFF, 0xFF, 0xFF, 1, kWindUpTicks * 2, 0);
+    fade.elapsed = windup_ticks;
+
+    if (windup_ticks >= kWindUpTicks) {
+        windup_ready = true;
+    }
+}
+
+} // namespace
 
 /**
  * Refuses a dungeon quick change while the last one's effect is still playing.
@@ -8528,6 +8616,8 @@ void PortFinishQuickChange() {
 // Starts on the first game frame after the menu closes. Instead of Dark Cloud's ambient pulse and ceffe_s model,
 // the character's own palette animation fades from white, with a splash of stars around it.
 void PortStepQuickChangeEffect() {
+    StepQuickChangeWindUp();
+
     if (PortLoopNo != change_fx_loop) {
         StopChangeEffect();
         return;
