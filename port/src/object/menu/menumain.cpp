@@ -1,10 +1,14 @@
 #include "common.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "asset_directory.hpp"
@@ -22,6 +26,9 @@
 #include "inventmn.hpp"
 #include "log/game_output.hpp"
 #include "log/log.hpp"
+#include "platform/datapacks.hpp"
+#include "platform/texture_catalog.hpp"
+#include "texture_source.hpp"
 #include "platform/stutter_timing.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
@@ -2836,9 +2843,67 @@ void MenuBaseTextureReEnter() {
     MenuPosData->ResetTextureInfoAll();
 }
 
+namespace {
+/**
+ * Starts decoding the Make page's background art on a worker thread as the menu opens, so the first Make
+ * page of a session finds it in the decode cache instead of decoding it (about 115 ms on Switch) on the frame
+ * it opens. Make reads the same pack and document the same way; the worker works on its own copy of the
+ * entries, so a data reload cannot free them under it.
+ */
+void PrefetchMakeBackground() {
+    static std::atomic<bool> running{false};
+    if (running.exchange(true)) {
+        return;
+    }
+    std::shared_ptr<std::vector<texture_catalog::Entry>> entries;
+    try {
+        const auto directory = dc2::menu::ReadMenuFile("inv2_bg.pac");
+        if (static_cast<bool>(directory)) {
+            const auto bytes = directory.Bytes();
+            if (const u_int *file = AssetDirectoryRead(bytes.data(), "inv_bg.json", nullptr)) {
+                if (const auto name = TextureSourceLookup(file)) {
+                    if (const auto *source = texture_catalog::Find(*name)) {
+                        entries = std::make_shared<std::vector<texture_catalog::Entry>>(source->entries.begin(), source->entries.end());
+                    }
+                }
+            }
+        }
+    } catch (const std::exception &error) {
+        CT_LOG_WARN(Menu, "make prefetch: could not find the background art: {}", error.what());
+    }
+    if (!entries || entries->empty()) {
+        running = false;
+        return;
+    }
+    try {
+        std::thread([entries] {
+            const auto                                  start = std::chrono::steady_clock::now();
+            std::vector<const texture_catalog::Entry *> pointers;
+            pointers.reserve(entries->size());
+            for (const auto &entry : *entries) {
+                pointers.push_back(&entry);
+            }
+            try {
+                datapacks::PrefetchEntries(pointers);
+            } catch (...) {
+                // Not cached; the Make page decodes it on opening, as before.
+            }
+            CT_LOG_INFO(Menu, "make prefetch: background art decoded ahead in {:.1f} ms",
+                        dc2::stutter_timing::ElapsedMs(start));
+            running = false;
+        }).detach();
+    } catch (const std::exception &error) {
+        CT_LOG_WARN(Menu, "make prefetch: no worker thread: {}", error.what());
+        running = false;
+    }
+}
+} // namespace
+
 int MenuMainInit(MENU_INIT_ARG *arg) {
     menuworld::MenuOpening(arg);
-    return MenuInitCore(arg);
+    const int result = MenuInitCore(arg);
+    PrefetchMakeBackground();
+    return result;
 }
 
 int MenuMainExit() {
