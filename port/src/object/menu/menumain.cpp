@@ -1,10 +1,14 @@
 #include "common.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "asset_directory.hpp"
@@ -22,6 +26,9 @@
 #include "inventmn.hpp"
 #include "log/game_output.hpp"
 #include "log/log.hpp"
+#include "platform/datapacks.hpp"
+#include "platform/texture_catalog.hpp"
+#include "texture_source.hpp"
 #include "platform/stutter_timing.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
@@ -956,6 +963,8 @@ double menu_page_draw_ms = 0.0;
 double menu_refresh_ms = 0.0;
 double menu_key_ms = 0.0;
 int    menu_key_page = -1;
+
+void ReportMakePrefetch();
 } // namespace
 
 int MenuMainLoop() {
@@ -972,6 +981,7 @@ int MenuMainKey() {
         announced = true;
         CT_LOG_INFO(Menu, "timing: menu frame timers on (menu frames over 20 ms are reported)");
     }
+    ReportMakePrefetch();
     menu_key_page = MenuCommonInfo->now_mode;
     menu_page_key_ms = 0.0;
     menu_refresh_ms = 0.0;
@@ -2836,9 +2846,82 @@ void MenuBaseTextureReEnter() {
     MenuPosData->ResetTextureInfoAll();
 }
 
+namespace {
+// Decodes the Make page's background art on a worker as the menu opens, so the first Make page of a session
+// finds it in the decode cache instead of decoding it (about 115 ms on Switch) on the frame it opens.
+//
+// The worker must never log. On Switch a thread that had logged crashed as it ended (Atmosphere reports in
+// newlib's formatting code, right after the worker's only log line), so it only stores how long it took, and
+// the main thread logs that. It is also kept and joined rather than detached.
+std::jthread      make_prefetch_worker;
+std::atomic<bool> make_prefetch_running{false};
+std::atomic<int>  make_prefetch_result_us{-1};
+
+void PrefetchMakeBackground() {
+    if (make_prefetch_running.exchange(true)) {
+        return;
+    }
+    // The previous worker has finished (clearing the flag was its last step); collect it before starting another.
+    if (make_prefetch_worker.joinable()) {
+        make_prefetch_worker.join();
+    }
+    std::shared_ptr<std::vector<texture_catalog::Entry>> entries;
+    try {
+        const auto directory = dc2::menu::ReadMenuFile("inv2_bg.pac");
+        if (static_cast<bool>(directory)) {
+            const auto bytes = directory.Bytes();
+            if (const u_int *file = AssetDirectoryRead(bytes.data(), "inv_bg.json", nullptr)) {
+                if (const auto name = TextureSourceLookup(file)) {
+                    if (const auto *source = texture_catalog::Find(*name)) {
+                        entries = std::make_shared<std::vector<texture_catalog::Entry>>(source->entries.begin(), source->entries.end());
+                    }
+                }
+            }
+        }
+    } catch (const std::exception &error) {
+        CT_LOG_WARN(Menu, "make prefetch: could not find the background art: {}", error.what());
+    }
+    if (!entries || entries->empty()) {
+        make_prefetch_running = false;
+        return;
+    }
+    try {
+        make_prefetch_worker = std::jthread([entries] {
+            const auto                                  start = std::chrono::steady_clock::now();
+            std::vector<const texture_catalog::Entry *> pointers;
+            pointers.reserve(entries->size());
+            for (const auto &entry : *entries) {
+                pointers.push_back(&entry);
+            }
+            try {
+                datapacks::PrefetchEntries(pointers);
+            } catch (...) {
+                // Not cached; the Make page decodes it on opening, as before.
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+            make_prefetch_result_us = static_cast<int>(elapsed.count());
+            make_prefetch_running = false;
+        });
+        CT_LOG_INFO(Menu, "make prefetch: started on a silent worker");
+    } catch (const std::exception &error) {
+        CT_LOG_WARN(Menu, "make prefetch: no worker thread: {}", error.what());
+        make_prefetch_running = false;
+    }
+}
+
+// Logs, on the main thread, how long the last prefetch took once it has finished.
+void ReportMakePrefetch() {
+    if (const int microseconds = make_prefetch_result_us.exchange(-1); microseconds >= 0) {
+        CT_LOG_INFO(Menu, "make prefetch: background art decoded ahead in {:.1f} ms", microseconds / 1000.0);
+    }
+}
+} // namespace
+
 int MenuMainInit(MENU_INIT_ARG *arg) {
     menuworld::MenuOpening(arg);
-    return MenuInitCore(arg);
+    const int result = MenuInitCore(arg);
+    PrefetchMakeBackground();
+    return result;
 }
 
 int MenuMainExit() {
