@@ -8527,8 +8527,10 @@ void PortStepQuickChangeEffect() {
 
         // The dungeon loads the item-use effect with the floor (dc2::dungeon setup); town has none, so a town
         // swap shows the glow alone. Started after the swap, it follows the character that now stands there.
+        // The by-name CreateEffSpt returns the owner slot, which is -1 for an effect not registered to one, so
+        // success is read from the effect itself.
         if (PortLoopNo == LOOP_DUNGEON && FxScriptMan != nullptr &&
-            FxScriptMan->CreateEffSpt(kChangeEffectName, 0, 0) >= 0) {
+            FxScriptMan->CreateEffSpt(FxScriptMan->SearchBaseNo(kChangeEffectName), 0, 0) != nullptr) {
             FxScriptMan->SetScriptTargetId(0, -1, -1);
             FxScriptMan->SetValue(0, kChangeEffectPowerUp, 0, -1);
             static bool logged = false;
