@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -1001,6 +1002,10 @@ struct TownSectionTimer {
     using Clock = std::chrono::steady_clock;
     Clock::time_point start{};
     double            held_ms = 0.0;
+    double            start_ms = 0.0;    // LoadSubMap
+    double            villager_ms = 0.0; // PreLoadVillager
+    double            step_max_ms = 0.0; // longest single background step
+    int               steps = 0;
     int               section = -1;
 
     static double Ms(Clock::duration duration) { return std::chrono::duration<double, std::milli>(duration).count(); }
@@ -1022,8 +1027,16 @@ std::chrono::steady_clock::time_point TownFrameLast{};
 int SubMapLoadStep() {
     CScene *scene = {};
 
-    if (MainScene->LoadMapBGStep(nullptr) != 0) {
+    const auto step_start = TownSectionTimer::Clock::now();
+    const int  step_result = MainScene->LoadMapBGStep(nullptr);
+    if (TownSectionLoad.section >= 0) {
+        TownSectionLoad.step_max_ms = std::max(TownSectionLoad.step_max_ms,
+                                               TownSectionTimer::Ms(TownSectionTimer::Clock::now() - step_start));
+        ++TownSectionLoad.steps;
+    }
+    if (step_result != 0) {
         if (SubMapLoadBG != 0) {
+            const auto finish_start = TownSectionTimer::Clock::now();
             SubMapLoadBG = 0;
             MainScene->SetActive(SCENE_DATA_MAP, 1);
             MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
@@ -1032,10 +1045,14 @@ int SubMapLoadStep() {
             scene = MainScene;
             EditMapInitEvent(now_load_map_no, static_cast<CEditMap *>(scene->GetMap(scene->GetMapID(name))));
             if (TownSectionLoad.section == now_load_map_no) {
-                CT_LOG_INFO(Town, "town section {} ({}) loaded in {:.0f} ms; player held waiting {:.0f} ms",
+                const auto now = TownSectionTimer::Clock::now();
+                CT_LOG_INFO(Town, "town section {} ({}) loaded in {:.0f} ms; player held waiting {:.0f} ms; "
+                                  "start {:.0f} ms, villager preload {:.0f} ms, {} background steps (longest {:.0f} ms), "
+                                  "finish {:.0f} ms",
                             now_load_map_no, name != nullptr ? name : "?",
-                            TownSectionTimer::Ms(TownSectionTimer::Clock::now() - TownSectionLoad.start),
-                            TownSectionLoad.held_ms);
+                            TownSectionTimer::Ms(now - TownSectionLoad.start), TownSectionLoad.held_ms,
+                            TownSectionLoad.start_ms, TownSectionLoad.villager_ms, TownSectionLoad.steps,
+                            TownSectionLoad.step_max_ms, TownSectionTimer::Ms(now - finish_start));
                 TownSectionLoad.section = -1;
             }
             now_load_map_no = -1;
@@ -1345,8 +1362,13 @@ int EditLoop() {
                 TownSectionLoad.section = next_sub_map;
                 TownSectionLoad.start = TownSectionTimer::Clock::now();
                 TownSectionLoad.held_ms = 0.0;
+                TownSectionLoad.step_max_ms = 0.0;
+                TownSectionLoad.steps = 0;
                 LoadSubMap(MainScene, next_sub_map, 1);
+                const auto villager_start = TownSectionTimer::Clock::now();
+                TownSectionLoad.start_ms = TownSectionTimer::Ms(villager_start - TownSectionLoad.start);
                 MainScene->PreLoadVillager(next_sub_map, ReadBufferLease());
+                TownSectionLoad.villager_ms = TownSectionTimer::Ms(TownSectionTimer::Clock::now() - villager_start);
                 SubMapLoadBG = 1;
             }
         }
