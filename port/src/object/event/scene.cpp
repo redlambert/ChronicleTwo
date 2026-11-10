@@ -1253,6 +1253,46 @@ std::string DescribeRetiringCharacter(const CSceneCharacter &slot, const mgCMemo
 }
 
 /**
+ * When the only things a character still holds from the arena are extra cutscene animations and their images,
+ * releases those (what the cutscene's own "delete extension packs" does) so the character stays in the scene.
+ * On the PS2 the post-boss cutscene in the Underground Channel clears that memory a few lines before releasing
+ * Max's extra animations; dropping Max instead left him invisible.
+ */
+bool ReleaseRetiringExtensionPacks(CSceneCharacter &slot, const mgCMemory &memory, dc2::memory::ArenaResetKind kind) {
+    if (slot.resource_lifetime.HasValue() &&
+        (!slot.ResourcesLive() || slot.resource_lifetime.WouldRetireOnReset(memory, kind))) {
+        return false;
+    }
+    CCharacter2 *character = slot.Resource().Get();
+    if (character == nullptr) {
+        return false;
+    }
+    auto resources = character->resource_state.Acquire<dc2::character::ResourceState>();
+    if (!resources || resources->anchor.WouldRetireOnReset(memory, kind)) {
+        return false;
+    }
+    bool extension_found = false;
+    for (const auto &producer : resources->producers) {
+        if (!producer.lifetime.WouldRetireOnReset(memory, kind)) {
+            continue;
+        }
+        const bool extension = producer.index > 0 && (producer.channel == dc2::character::ResourceChannel::Motion ||
+                                                      producer.channel == dc2::character::ResourceChannel::ShadowMotion ||
+                                                      producer.channel == dc2::character::ResourceChannel::Image);
+        if (!extension) {
+            return false;
+        }
+        extension_found = true;
+    }
+    if (!extension_found) {
+        return false;
+    }
+    resources.reset();
+    character->DeleteExtMotion();
+    return slot.Resource().Get() != nullptr && !slot.ResourcesWouldRetireOnReset(memory, kind);
+}
+
+/**
  * Drops scene borrowers before the explicit producer storage is retired.
  */
 void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::ArenaResetKind kind) {
@@ -1275,6 +1315,13 @@ void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::A
             auto &slot = scene.chara[index];
             if ((slot.Resource().HasValue() || slot.resource_lifetime.HasValue()) &&
                 (!slot.ResourcesLive() || slot.ResourcesWouldRetireOnReset(memory, kind))) {
+                if (slot.ResourcesLive() && ReleaseRetiringExtensionPacks(slot, memory, kind)) {
+                    CT_LOG_INFO(Memory, "scene character {} ({}) kept: released its extra cutscene animations "
+                                        "before arena '{}' was reset",
+                                index, dc2::text::View(slot.name),
+                                std::string_view(memory.name, strnlen(memory.name, sizeof(memory.name))));
+                    continue;
+                }
                 CT_LOG_WARN(Memory, "scene character {} ({}) removed by {} of arena '{}' [{}]: it still holds {}",
                             index, dc2::text::View(slot.name),
                             kind == dc2::memory::ArenaResetKind::Stack ? "a clear" : "a rebind",

@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -992,6 +993,27 @@ void InitSubMapLoadStep() {
     now_load_map_no = -1;
 }
 
+namespace {
+/**
+ * Diagnostic: times Palm Brinks section loads and how long the player is held waiting for one.
+ */
+struct TownSectionTimer {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point start{};
+    double            held_ms = 0.0;
+    int               section = -1;
+
+    static double Ms(Clock::duration duration) { return std::chrono::duration<double, std::milli>(duration).count(); }
+};
+
+TownSectionTimer TownSectionLoad;
+
+/**
+ * Diagnostic: logs town frames that run long.
+ */
+std::chrono::steady_clock::time_point TownFrameLast{};
+} // namespace
+
 /**
  *
  * Advances background submap loading and initializes its villagers and events.
@@ -1009,6 +1031,13 @@ int SubMapLoadStep() {
             char *name = GetMapName(now_load_map_no, nullptr);
             scene = MainScene;
             EditMapInitEvent(now_load_map_no, static_cast<CEditMap *>(scene->GetMap(scene->GetMapID(name))));
+            if (TownSectionLoad.section == now_load_map_no) {
+                CT_LOG_INFO(Town, "town section {} ({}) loaded in {:.0f} ms; player held waiting {:.0f} ms",
+                            now_load_map_no, name != nullptr ? name : "?",
+                            TownSectionTimer::Ms(TownSectionTimer::Clock::now() - TownSectionLoad.start),
+                            TownSectionLoad.held_ms);
+                TownSectionLoad.section = -1;
+            }
             now_load_map_no = -1;
         }
 
@@ -1019,6 +1048,20 @@ int SubMapLoadStep() {
 }
 
 int EditLoop() {
+    {
+        // A frame at 30 per second takes 33 ms; report town frames well past that (loads show up here too).
+        const auto now = std::chrono::steady_clock::now();
+        if (TownFrameLast == std::chrono::steady_clock::time_point{}) {
+            CT_LOG_INFO(Town, "town slow frame watch: on (logs town frames over 45 ms)");
+        } else {
+            const double frame_ms = std::chrono::duration<double, std::milli>(now - TownFrameLast).count();
+            if (frame_ms > 45.0) {
+                CT_LOG_INFO_LIMIT(std::chrono::milliseconds{500}, Town, "town slow frame: {:.1f} ms, section loading {}",
+                                  frame_ms, now_load_map_no >= 0 ? "yes" : "no");
+            }
+        }
+        TownFrameLast = now;
+    }
     static int       old_cm;
     CMap            *map = {};
     CCharacter2     *chara = {};
@@ -1299,6 +1342,9 @@ int EditLoop() {
 
             if (next_sub_map > 0) {
                 now_load_map_no = next_sub_map;
+                TownSectionLoad.section = next_sub_map;
+                TownSectionLoad.start = TownSectionTimer::Clock::now();
+                TownSectionLoad.held_ms = 0.0;
                 LoadSubMap(MainScene, next_sub_map, 1);
                 MainScene->PreLoadVillager(next_sub_map, ReadBufferLease());
                 SubMapLoadBG = 1;
@@ -1309,7 +1355,11 @@ int EditLoop() {
     }
 
     if (SubMapLoadStep() != 0) {
+        const auto held_start = TownSectionTimer::Clock::now();
         while (wait_for_map != 0 && SubMapLoadStep() != 0) {
+        }
+        if (wait_for_map != 0) {
+            TownSectionLoad.held_ms += TownSectionTimer::Ms(TownSectionTimer::Clock::now() - held_start);
         }
     }
 
