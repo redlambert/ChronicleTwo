@@ -180,6 +180,16 @@ void Late(std::size_t index, LogLevel level, std::string_view format, const Args
 #define CT_LOG_ERROR(category, fmt, ...) CT_LOG_CALL_(QUILL_LOG_ERROR, Error, CT_LOG_INDEX_(category), fmt, ##__VA_ARGS__)
 #define CT_LOG_CRITICAL(category, fmt, ...) CT_LOG_CALL_(QUILL_LOG_CRITICAL, Critical, CT_LOG_INDEX_(category), fmt, ##__VA_ARGS__)
 
+// Logs only the first time this call site runs (per process), for one-time "this fix ran" lines.
+#define CT_LOG_INFO_ONCE(category, fmt, ...)                 \
+    do {                                                     \
+        static bool ct_log_once_done_ = false;               \
+        if (!ct_log_once_done_) {                            \
+            ct_log_once_done_ = true;                        \
+            CT_LOG_INFO(category, fmt, ##__VA_ARGS__);       \
+        }                                                    \
+    } while (0)
+
 // For per-frame sites: at most one line per interval (a std::chrono duration) per call site and thread;
 // the line ends " (Nx)" for the N calls it stands for.
 #define CT_LOG_LIMIT_(quill_call, level, interval, category, fmt, ...)                                      \

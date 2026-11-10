@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 
 #include <libvu0.h>
 
@@ -1249,6 +1250,10 @@ int DistCheck_Action2(CScene *scene, float unused, float range, float *out_dist,
     float           tmp_dist = {};
 
     player = static_cast<CActionChara *>(scene->GetCharacter(0));
+    if (player == nullptr) {
+        CT_LOG_INFO_ONCE(Dungeon, "missing player: lock-on search found no target this frame");
+        return -1;
+    }
     direction[3] = 1.0f;
     best_dist = range;
     player->GetPosition(own_pos);
@@ -1345,6 +1350,10 @@ int Check_LockOn(CScene *scene, float range, int index) {
     int             out_of_range = {};
 
     player = static_cast<CActionChara *>(scene->GetCharacter(0));
+    if (player == nullptr) {
+        CT_LOG_INFO_ONCE(Dungeon, "missing player: lock-on check dropped the target this frame");
+        return false;
+    }
     player->GetPosition(own_pos);
     target = static_cast<CActiveMonster *>(scene->GetCharacter(index));
 
@@ -1839,7 +1848,9 @@ int CActionChara::HumanShrowMoveIF() {
     } else if (lock_on != 0) {
         target = static_cast<CActionChara *>(nowScene__2->GetCharacter(target_no));
 
-        if (target->chara_kind == ACTION_KIND_SCRIPT) {
+        if (target == nullptr) {
+            CT_LOG_INFO_ONCE(Dungeon, "missing character: locked-on target gone, turning skipped");
+        } else if (target->chara_kind == ACTION_KIND_SCRIPT) {
             target->GetEntryObjectPos(CHARA_ENTRY_GROUP_TARGET, 0, target_position);
             rotation = unitRotation(CObjectFrame::frame, atan2f(target_position[0] - position[0], target_position[2] - position[2]), 5.0f);
             SetRotation(0.0f, rotation, 0.0f);

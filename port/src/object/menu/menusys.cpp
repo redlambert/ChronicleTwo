@@ -6223,7 +6223,11 @@ void CMenuItemInfo::ExitEnd() {
         MenuCharaSoundEnter(MenuMainScene, field_chara, 1);
     }
 
-    if (chara_reload != 0) {
+    if (chara_reload != 0 && MenuMainScene->GetCharacter(0) == nullptr) {
+        CT_LOG_INFO_ONCE(Menu, "missing player: Items menu exit skipped the character reload");
+    }
+
+    if (chara_reload != 0 && MenuMainScene->GetCharacter(0) != nullptr) {
         chara_no = GetActiveCharaNo();
         chara = static_cast<CActionChara *>(MenuMainScene->GetCharacter(0));
         DeleteOutLineMenu(chara, 0);
@@ -6275,7 +6279,7 @@ void CMenuItemInfo::ExitEnd() {
             }
         }
 
-        if (GetActiveCharaNo() == USER_CHARA_ROBO) {
+        if (GetActiveCharaNo() == USER_CHARA_ROBO && field_chara != nullptr) {
             CharaSndBuffer = nullptr;
             MenuCharaSoundEnter(MenuMainScene, field_chara, 0);
             field_chara->sound_info.se_bank = Robo_Sound_ID_Save;
@@ -12610,7 +12614,11 @@ int MenuItemInitCore(mgCMemory *stack, int *tex_block, int mode) {
     }
 
     if (chara_no == USER_CHARA_ROBO) {
-        Robo_Sound_ID_Save = MenuMainScene->GetCharacter(0)->sound_info.se_bank;
+        if (auto *robo = MenuMainScene->GetCharacter(0); robo != nullptr) {
+            Robo_Sound_ID_Save = robo->sound_info.se_bank;
+        } else {
+            CT_LOG_INFO_ONCE(Menu, "missing player: Ridepod sound bank not saved");
+        }
     }
 
     CMenuItemInfoPt->SetEquipListNo(chara_no);

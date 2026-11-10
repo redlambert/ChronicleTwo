@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -321,7 +322,14 @@ void CSphida::SetUp(int arg) {
     CSaveData           *save = {};
     float                navi = {};
 
-    DngMainScene->GetCharacter(DngMainScene->player_chara)->GetPosition(chara_pos);
+    if (auto *player = DngMainScene->GetCharacter(DngMainScene->player_chara); player != nullptr) {
+        player->GetPosition(chara_pos);
+    } else {
+        // No player yet: place the check point far away so no pin counts as near.
+        CT_LOG_INFO_ONCE(Dungeon, "missing player: Spheda setup treated the player as far from every pin");
+        chara_pos[0] = chara_pos[1] = chara_pos[2] = 1.0e9f;
+        chara_pos[3] = 1.0f;
+    }
     boxes = DngMainScene->battle_area.treasure_box;
     SearchMapEventParts(1, parts, dists, 0x80);
 
@@ -571,6 +579,11 @@ int CSphida::Step() {
     }
 
     character = DngMainScene->GetCharacter(DngMainScene->player_chara);
+    if (character == nullptr) {
+        CT_LOG_INFO_ONCE(Dungeon, "missing player: Spheda step skipped for a frame");
+        pow_gage.Step();
+        return 0;
+    }
     character->GetPosition(character_position);
     pow_gage.Step();
 
@@ -1027,10 +1040,17 @@ void CSphida::Draw() {
     } else if (omake_mode == 1 && DngStatus.mode == DNG_STATUS_FIELD) {
         DNG_BATTLE_AREA *area = &DngMainScene->battle_area;
 
-        if (!area->script.running && !(area->pause_flag & DNG_PAUSE_MINIMAP) && config->map != SV_CONFIG_MAP_OFF) {
+        // Between a cutscene and gameplay the player can be missing for a frame; skip the minimap then.
+        CCharacter2 *player = DngMainScene->GetCharacter(0);
+        const bool    minimap_on =
+            !area->script.running && !(area->pause_flag & DNG_PAUSE_MINIMAP) && config->map != SV_CONFIG_MAP_OFF;
+        if (minimap_on && player == nullptr) {
+            CT_LOG_INFO_ONCE(Dungeon, "missing player: minimap skipped for a frame");
+        }
+
+        if (minimap_on && player != nullptr) {
             float player_pos[4];
             tex_man->ReloadTexture(0x66, (sceVif1Packet *) nullptr);
-            CCharacter2 *player = DngMainScene->GetCharacter(0);
             player->GetPosition(player_pos);
 
             if (config->map == SV_CONFIG_MAP_SMALL) {

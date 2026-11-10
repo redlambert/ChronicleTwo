@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 
 #include <cmath>
 
@@ -129,6 +130,10 @@ bool TownFirstPersonWalk(CScene *scene, CPadControl *pad) {
     }
     auto         *camera = static_cast<CCameraControl *>(scene->GetCamera(0));
     auto         *chara = scene->GetCharacter(scene->player_chara);
+    if (chara == nullptr || camera == nullptr) {
+        CT_LOG_INFO_ONCE(Town, "missing player: first-person walk skipped for a frame");
+        return false;
+    }
     sceVu0FVECTOR before;
     sceVu0FVECTOR after;
     chara->GetPosition(before);

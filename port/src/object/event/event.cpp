@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 
 #include <libvu0.h>
 #include <sifdev.h>
@@ -169,6 +170,12 @@ int EventDoorLoop(int frame, int use_scene_se) {
     CCharacter2     *character = GetCharacter(EdEventInfo.func_iparam[0]);
     mgCCamera       *camera = GetActiveCamera();
     mgCCameraFollow *follow = (mgCCameraFollow *) GetActiveCamera();
+
+    if (character == nullptr) {
+        CT_LOG_INFO_ONCE(Event, "missing character: door opening ended early, character {} not there",
+                         EdEventInfo.func_iparam[0]);
+        return 1;
+    }
 
     if (frame <= 0) {
         character->SetPosition(character_pos);

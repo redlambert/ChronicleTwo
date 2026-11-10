@@ -17767,7 +17767,13 @@ static int _GEOSTONE_DEL_REFERENCE(dc2::script::RunArguments stack, int argc) {
  *
  */
 static int _GET_ROBO_MOVE_TYPE(dc2::script::RunArguments stack, int argc) {
-    SetStack(stack, (static_cast<CActionChara *>(GetCharacter(0)))->move_type);
+    auto *robo = static_cast<CActionChara *>(GetCharacter(0));
+    if (robo == nullptr) {
+        CT_LOG_INFO_ONCE(Event, "missing player: Ridepod move type read as 0");
+        SetStack(stack, 0);
+        return true;
+    }
+    SetStack(stack, robo->move_type);
     return true;
 }
 

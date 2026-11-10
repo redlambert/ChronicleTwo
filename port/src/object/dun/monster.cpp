@@ -2239,7 +2239,11 @@ void CMonsterMan::CheckDamage() {
                 }
 
                 if (melee) {
-                    player->melee_hit = true;
+                    if (player != nullptr) {
+                        player->melee_hit = true;
+                    } else {
+                        CT_LOG_INFO_ONCE(Dungeon, "missing player: monster guard hit skipped the player's hit flag");
+                    }
                 }
 
                 continue;

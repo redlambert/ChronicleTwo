@@ -1016,11 +1016,7 @@ void BattleAreaBGMCtrl() {
     if (player != nullptr) {
         player->battle_stance = distance <= 340.0f;
     } else {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            CT_LOG_INFO(Audio, "battle music: no player character this frame, stance skipped");
-        }
+        CT_LOG_INFO_ONCE(Dungeon, "missing player: battle music skipped the stance for a frame");
     }
 
     if (!(state->pause_flag & DNG_PAUSE_BATTLE_MUSIC) && state->boss_map == 0) {

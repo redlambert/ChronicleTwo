@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 #include "mw_runtime.h"
 
 #include <algorithm>
@@ -3232,9 +3233,15 @@ int dc2::dungeon::MainKeyCore() {
             }
         }
 
-        if (BattleAreaScene->camera_mode == DNG_CAMERA_BOSS) {
+        CCharacter2 *boss_check = BattleAreaScene->camera_mode == DNG_CAMERA_BOSS
+                                      ? DngMainScene->GetCharacter(DNG_CHARA_SLOT_MONSTER)
+                                      : nullptr;
+        if (BattleAreaScene->camera_mode == DNG_CAMERA_BOSS && (boss_check == nullptr || MainChara__2 == nullptr)) {
+            CT_LOG_INFO_ONCE(Dungeon, "missing character: boss camera skipped for a frame (boss {}, player {})",
+                             boss_check != nullptr, MainChara__2 != nullptr);
+        } else if (BattleAreaScene->camera_mode == DNG_CAMERA_BOSS) {
             MainCamera.FollowOff();
-            CCharacter2  *boss = DngMainScene->GetCharacter(DNG_CHARA_SLOT_MONSTER);
+            CCharacter2  *boss = boss_check;
             sceVu0FVECTOR chara_pos;
 
             MainChara__2->GetPosition(chara_pos);
