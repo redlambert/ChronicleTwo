@@ -1708,6 +1708,10 @@ void mgCMemory::stSetBuffer(u_long128 *buffer, int size) {
     }
     const auto binding = BindingProof(*this, buffer, static_cast<std::size_t>(size) * sizeof(u_long128));
     if (!binding || !dc2::memory::BindingIndependentOf(*binding, *this)) {
+        const std::string_view arena_name(name, strnlen(name, sizeof(name)));
+        CT_LOG_CRITICAL(Memory, "rebind refused: '{}' [{}] bound to {} quadwords at {} (used {}), asked {} at {}",
+                        arena_name, static_cast<const void *>(this), stack_size, static_cast<const void *>(stack),
+                        stack_used, size, static_cast<const void *>(buffer));
         InvalidBinding(size);
     }
     dc2::memory::InvalidateArenaGeneration(*this);

@@ -2,6 +2,7 @@
 #include "platform/native_config.hpp"
 #include "profile.hpp"
 #include "log/game_output.hpp"
+#include "log/log.hpp"
 // clang-format on
 
 #include "common.h"
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <string_view>
 
 #include "actionchara.hpp"
 #include "actscript.hpp"
@@ -3021,6 +3023,20 @@ bool CActiveMonster::Copy(CActiveMonster &dest, mgCMemory *memory) try {
         if (buffer == nullptr) {
             dest.Initialize();
             return false;
+        }
+        // A slot only proves the extent it was last bound to. After a big monster and then a small one used this
+        // slot, ArenaBlock hands back the same block for a medium monster, and rebinding a live arena past its last
+        // extent aborts (Halloween's eye bombs hit this). Clearing the slot first lets the block's root prove the
+        // full size again. Nothing is allocated in the slot here (stack_used is 0), so nothing is lost.
+        if (memory->stack != nullptr && memory->stack_size < static_cast<int>(capacity)) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                CT_LOG_INFO(Memory, "monster slot: '{}' grows from {} to {} quadwords, cleared before rebinding",
+                            std::string_view(memory->name, strnlen(memory->name, sizeof(memory->name))),
+                            memory->stack_size, capacity);
+            }
+            memory->stSetBuffer(nullptr, 0);
         }
         memory->stSetBuffer(buffer, static_cast<int>(capacity));
     }
