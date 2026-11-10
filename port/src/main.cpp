@@ -254,7 +254,15 @@ PresentSettings PresentSettingsFor(const Config &config, const Options &options)
     };
 #ifdef __SWITCH__
     const char *canonical_only = std::getenv("DC2_SWITCH_CANONICAL_ONLY");
-    settings.interpolation = canonical_only == nullptr || std::string_view(canonical_only) != "1";
+    // The menu hides this row on Switch; "video": {"interpolation": false} in config.json still turns it off.
+    settings.interpolation =
+        config.interpolation && (canonical_only == nullptr || std::string_view(canonical_only) != "1");
+    static bool interpolation_logged = false;
+    if (!interpolation_logged) {
+        interpolation_logged = true;
+        CT_LOG_INFO(Gfx, "switch: interpolation {} (config.json video.interpolation)",
+                    settings.interpolation ? "on, up to 60 drawn frames a second" : "off, 30 drawn frames a second");
+    }
     const char *hide_fps = std::getenv("DC2_SWITCH_HIDE_FPS");
     if (hide_fps != nullptr && std::string_view(hide_fps) == "1") {
         settings.show_fps = false;
