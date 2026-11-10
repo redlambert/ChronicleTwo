@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -1195,9 +1197,70 @@ mgCMemory *CScene::GetStack(int index) {
 
 namespace {
 /**
+ * Names a character resource family for the removal log.
+ */
+const char *ResourceChannelName(dc2::character::ResourceChannel channel) {
+    switch (channel) {
+        case dc2::character::ResourceChannel::Model: return "model";
+        case dc2::character::ResourceChannel::Shadow: return "shadow";
+        case dc2::character::ResourceChannel::Motion: return "motion";
+        case dc2::character::ResourceChannel::ShadowMotion: return "shadow motion";
+        case dc2::character::ResourceChannel::Image: return "image";
+        case dc2::character::ResourceChannel::Skin: return "skin";
+        case dc2::character::ResourceChannel::Copy: return "copy";
+        case dc2::character::ResourceChannel::ParentOutline: return "parent outline";
+        case dc2::character::ResourceChannel::Cloth: return "cloth";
+        case dc2::character::ResourceChannel::Lod: return "lod";
+        case dc2::character::ResourceChannel::Effect: return "effect";
+        case dc2::character::ResourceChannel::Sword: return "sword";
+    }
+    return "unknown";
+}
+
+/**
+ * Lists what a character still holds from an arena that is about to be reset, for the removal log.
+ */
+std::string DescribeRetiringCharacter(const CSceneCharacter &slot, const mgCMemory &memory,
+                                      dc2::memory::ArenaResetKind kind) {
+    std::string out;
+    if (slot.resource_lifetime.HasValue() && !slot.ResourcesLive()) {
+        out += "slot lifetime already gone; ";
+    } else if (slot.resource_lifetime.HasValue() && slot.resource_lifetime.WouldRetireOnReset(memory, kind)) {
+        out += "slot lifetime; ";
+    }
+    const CCharacter2 *character = slot.Resource().Get();
+    if (character == nullptr) {
+        out += "character already gone";
+        return out;
+    }
+    if (slot.Resource().WouldRetireOnReset(memory, kind) && !character->resource_state.HasValue()) {
+        out += "character object; ";
+    }
+    if (auto resources = character->resource_state.Acquire<dc2::character::ResourceState>()) {
+        if (resources->anchor.WouldRetireOnReset(memory, kind)) {
+            out += "model allocation; ";
+        }
+        for (const auto &producer : resources->producers) {
+            if (producer.lifetime.WouldRetireOnReset(memory, kind)) {
+                out += ResourceChannelName(producer.channel);
+                out += " #";
+                out += std::to_string(producer.index);
+                out += "; ";
+            }
+        }
+    }
+    return out.empty() ? std::string("nothing found") : out;
+}
+
+/**
  * Drops scene borrowers before the explicit producer storage is retired.
  */
 void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::ArenaResetKind kind) {
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        CT_LOG_INFO(Memory, "scene removal log: on (lists any character a stack clear takes out of a scene)");
+    }
     bool retired;
     do {
         retired = false;
@@ -1208,9 +1271,15 @@ void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::A
                 retired = true;
             }
         }
-        for (auto &slot : scene.chara) {
+        for (std::size_t index = 0; index < std::size(scene.chara); ++index) {
+            auto &slot = scene.chara[index];
             if ((slot.Resource().HasValue() || slot.resource_lifetime.HasValue()) &&
                 (!slot.ResourcesLive() || slot.ResourcesWouldRetireOnReset(memory, kind))) {
+                CT_LOG_WARN(Memory, "scene character {} ({}) removed by {} of arena '{}' [{}]: it still holds {}",
+                            index, dc2::text::View(slot.name),
+                            kind == dc2::memory::ArenaResetKind::Stack ? "a clear" : "a rebind",
+                            std::string_view(memory.name, strnlen(memory.name, sizeof(memory.name))),
+                            static_cast<const void *>(&memory), DescribeRetiringCharacter(slot, memory, kind));
                 slot.Initialize();
                 retired = true;
             }

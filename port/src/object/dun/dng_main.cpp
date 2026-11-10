@@ -3,6 +3,7 @@
 #include "mw_runtime.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -975,9 +976,47 @@ void FinishDungeonMain() {
     ResetDungeonMonsters();
 }
 
+namespace {
+/**
+ * Diagnostic: logs dungeon frames that run long, split into game logic and draw time, to find slowdowns.
+ */
+struct DungeonFrameTimer {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point last_entry{};
+    Clock::time_point step_start{};
+    double            logic_ms = 0.0;
+    double            draw_ms = 0.0;
+
+    static double Ms(Clock::duration duration) { return std::chrono::duration<double, std::milli>(duration).count(); }
+};
+
+DungeonFrameTimer DngFrameTimer;
+} // namespace
+
 int LoopDungeonMain() {
     int key{};
     int mode = {};
+
+    {
+        // A frame at 30 per second takes 33 ms; report frames well past that (load frames show up here too).
+        const auto now = DungeonFrameTimer::Clock::now();
+        if (DngFrameTimer.last_entry == DungeonFrameTimer::Clock::time_point{}) {
+            CT_LOG_INFO(Dungeon, "slow frame watch: on (logs dungeon frames over 45 ms)");
+        } else {
+            const double frame_ms = DungeonFrameTimer::Ms(now - DngFrameTimer.last_entry);
+            if (frame_ms > 45.0) {
+                CT_LOG_INFO_LIMIT(std::chrono::milliseconds{500}, Dungeon,
+                                  "slow frame: {:.1f} ms (game logic {:.1f} ms, draw {:.1f} ms, rest {:.1f} ms), mode {}",
+                                  frame_ms, DngFrameTimer.logic_ms, DngFrameTimer.draw_ms,
+                                  frame_ms - DngFrameTimer.logic_ms - DngFrameTimer.draw_ms,
+                                  static_cast<int>(DngStatus.mode));
+            }
+        }
+        DngFrameTimer.last_entry = now;
+        DngFrameTimer.logic_ms = 0.0;
+        DngFrameTimer.draw_ms = 0.0;
+        DngFrameTimer.step_start = now;
+    }
 
     auto *main_map_slot = DngMainScene->GetSceneMap(DngMainScene->active_map);
     dc2::dungeon::SetMainMap(main_map_slot != nullptr ? main_map_slot->GetMapView() : dc2::scene::MapView{});
@@ -1022,12 +1061,16 @@ int LoopDungeonMain() {
     }
 
     DngMainScene->fade.FadeStep();
+    DngFrameTimer.logic_ms = DungeonFrameTimer::Ms(DungeonFrameTimer::Clock::now() - DngFrameTimer.step_start);
 
     switch (mode) {
         case DNG_STATUS_FIELD:
         case DNG_STATUS_EVENT:
-        case DNG_STATUS_EVENT_EDIT:
+        case DNG_STATUS_EVENT_EDIT: {
+            const auto draw_start = DungeonFrameTimer::Clock::now();
             DngMainDraw();
+            DngFrameTimer.draw_ms = DungeonFrameTimer::Ms(DungeonFrameTimer::Clock::now() - draw_start);
+        }
 
             if (DngStatus.mode == DNG_STATUS_MENU || DngStatus.mode == DNG_STATUS_EVENT_MENU) {
                 static mgCMemory stack;
