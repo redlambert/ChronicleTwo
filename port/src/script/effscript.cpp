@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -21,6 +23,7 @@
 #include "dng_main.hpp"
 #include "effscript.hpp"
 #include "event_func.hpp"
+#include "diag/recorder.hpp"
 #include "log/game_output.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
@@ -438,6 +441,16 @@ int CEffectScriptMan::GetNeedFilePath(char *name, std::span<char> path, std::spa
 
 int CEffectScriptMan::CreateEffSpt(char *name, int user_id, int use_slot) {
     _EFF_SCRIPT *effect = CreateEffSpt(SearchBaseNo(name), user_id, use_slot);
+    if (name != nullptr) {
+        static std::string                           last_name;
+        static std::chrono::steady_clock::time_point last_time{};
+        const auto                                   now = std::chrono::steady_clock::now();
+        if (name != last_name || now - last_time > std::chrono::seconds(1)) {
+            dc2::diag::Notef("effect", "start '{}'{}", name, effect != nullptr ? "" : " (not loaded here)");
+        }
+        last_name = name;
+        last_time = now;
+    }
 
     if (effect != nullptr) {
         return effect->slot;

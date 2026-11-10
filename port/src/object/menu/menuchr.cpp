@@ -34,6 +34,7 @@
 #include "font.hpp"
 #include "gamedata.hpp"
 #include "gfx/gfx.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "mainloop.hpp"
 #include "maintex.hpp"
@@ -7974,6 +7975,7 @@ void InitMainCharaBGCore(int chara_no, mgCMemory *stack, int mode) {
     ReEquipFishingGameWeapon();
 
     dc2::memory::SetResetWatch(&MainScenePlayerLive);
+    dc2::diag::Notef("swap", "quick change to character {} from {}", NowReadMainCharaNo, active_chara);
     CT_LOG_INFO(Menu, "quick change to {} from {}: workspace [{}], load [{}], parts [{}] [{}] [{}] [{}] [{}] [{}] [{}]",
                 NowReadMainCharaNo, active_chara, static_cast<void *>(MenuArg.chara_stack),
                 static_cast<void *>(&MenuCharaLoadStack), static_cast<void *>(&MorattaStack[0]),

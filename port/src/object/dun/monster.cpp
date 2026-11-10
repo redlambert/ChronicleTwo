@@ -2,6 +2,7 @@
 #include "platform/native_config.hpp"
 #include "profile.hpp"
 #include "log/game_output.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 // clang-format on
 
@@ -1107,6 +1108,9 @@ CActiveMonster *CMonsterMan::SetActiveMonster(int refer_no, float pos[], sceVu0F
     memory[slot].stReset();
     locate.SetPutFlag(slot, true);
     tbl = GetReferPtr2(refer[refer_no].id);
+    dc2::diag::Notef("monster", "spawn '{}' (model {}) into slot {}",
+                     std::string_view(tbl->name, strnlen(tbl->name, sizeof(tbl->name))),
+                     std::string_view(tbl->model, strnlen(tbl->model, sizeof(tbl->model))), slot);
 
     if (tbl->share_model == 0) {
         refer[refer_no].chara.SetPosition(0.0f, 0.0f, 0.0f);

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+#include "diag/recorder.hpp"
 #include "log/game_output.hpp"
 #include "log/log.hpp"
 #include "luau_bindings.hpp"
@@ -41,6 +43,7 @@
 #include "platform/legacy_encoding.hpp"
 #include "platform/paths.hpp"
 #include "platform/vfs.hpp"
+#include "profile.hpp"
 
 namespace {
 
@@ -880,6 +883,8 @@ bool PushModuleFunction(lua_State *lua, const std::filesystem::path &file, std::
         return true;
     }
     lua_pop(lua, 2);
+    CT_PROFILE_ZONE("Load script file");
+    const auto load_start = std::chrono::steady_clock::now();
 
     std::ifstream input(file, std::ios::binary);
     if (!input) {
@@ -935,6 +940,8 @@ bool PushModuleFunction(lua_State *lua, const std::filesystem::path &file, std::
     }
 #endif
     CT_LOG_INFO(Script, "luau: {} {}", loaded_precompiled ? "loaded precompiled" : "compiled", PathsDisplay(file));
+    dc2::diag::Notef("script", "loaded {} in {:.0f} ms", PathsDisplay(file),
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load_start).count());
 
     lua_getref(lua, module_cache_ref);
     lua_pushvalue(lua, -2);
@@ -1632,6 +1639,9 @@ int Run(CRunScript *script, int no) {
         return -1;
     }
 
+    if (instance->module.find("map/") != std::string::npos) {
+        dc2::diag::Notef("event", "{} starts {}", ScriptLabel(instance->module), HandlerLabel(*instance, no));
+    }
     ReleaseRef(instance->thread_ref);
     lua_State *co = lua_newthread(state);
     instance->thread_ref = lua_ref(state, -1);

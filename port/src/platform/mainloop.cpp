@@ -17,6 +17,7 @@
 #include "charaviewlp.hpp"
 #include "convviewlp.hpp"
 #include "dataread.hpp"
+#include "diag/recorder.hpp"
 #include "dng_main.hpp"
 #include "editdata.hpp"
 #include "editloop.hpp"
@@ -303,6 +304,7 @@ mgCMemory *GetMainStack() {
 }
 
 void NextLoop(int loop_no, INIT_LOOP_ARG arg) {
+    dc2::diag::Notef("loop", "next mode {} (map {}, event {})", loop_no, arg.map_no, arg.event_no);
     NextLoopNo = loop_no;
     NextInitArg = arg;
 }
@@ -1345,13 +1347,17 @@ ClsMes PauseMes;
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
+#include <format>
 #include <print>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "arena_root.hpp"
 #include "crash/crash.hpp"
 #include "dataread.hpp"
 #include "debug_mode.hpp"
+#include "diag/recorder.hpp"
 #include "dng_main.hpp"
 #include "editdata.hpp"
 #include "editloop.hpp"
@@ -1403,6 +1409,31 @@ int PortVSyncCallBack(int unused) asm("MainLoop_VSyncCallBack");
 bool PortAutosave = false;
 
 namespace {
+
+/**
+ * Names where the player is for the diagnostics' per-area summaries, such as "town m01" or "dungeon 0 d01b01".
+ */
+std::string DiagAreaName(int loop_no) {
+    const auto map_name = [](CScene *scene) -> std::string_view {
+        if (scene == nullptr) {
+            return "?";
+        }
+        const char *name = scene->GetMapName(scene->active_map);
+        return name != nullptr && name[0] != '\0' ? std::string_view(name) : std::string_view("?");
+    };
+    switch (loop_no) {
+        case LOOP_EDIT:
+            return std::format("town {}", map_name(GetMainScene()));
+        case LOOP_DUNGEON:
+            return std::format("dungeon {} {}", DngStatus.dungeon_no, map_name(DngMainScene));
+        case LOOP_TITLE:
+            return "title";
+        case LOOP_MENU:
+            return "developer menu";
+        default:
+            return std::format("loop {}", loop_no);
+    }
+}
 
 std::optional<std::pair<int, int>> autosaved_floor;
 std::optional<int>                 autosaved_map;
@@ -1865,6 +1896,7 @@ void MainLoop() {
             }
             PortAutosaveStep(PortLoopNo);
             GamePerfStep(PortLoopNo);
+            dc2::diag::Tick(PortLoopNo, DiagAreaName(PortLoopNo), (GamePad__2.pad[0].button & PAD_SELECT) != 0);
 
             if (GamePad__2.On(PAD_CIRCLE)) {
                 cat_end();

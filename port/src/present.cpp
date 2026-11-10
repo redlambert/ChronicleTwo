@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -422,13 +423,20 @@ const gfx::DisplayList *DisplayOverlayList() {
  * Reports presentation rates and opt-in renderer timing samples once per second.
  */
 void LogPresentRates(Clock::time_point now) {
-    if ((settings.log_fps || gfx::FrameTimingEnabled()) && now - last_log >= std::chrono::seconds(1)) {
+    // The diagnostics keep renderer timing on all the time and read it themselves; the once-a-second report is
+    // only for KZ_PERF_LOG=1 runs.
+    static const bool perf_log = [] {
+        const char *value = std::getenv("KZ_PERF_LOG");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    const bool timing_report = perf_log && gfx::FrameTimingEnabled();
+    if ((settings.log_fps || timing_report) && now - last_log >= std::chrono::seconds(1)) {
         const double seconds = last_log == Clock::time_point{} ? 1.0 : std::chrono::duration<double>(now - last_log).count();
         last_log = now;
         if (settings.log_fps) {
             CT_LOG_INFO(Gfx, "present: {}", PresentFpsText());
         }
-        if (gfx::FrameTimingEnabled()) {
+        if (timing_report) {
             gfx::LogFrameTimings(seconds);
         }
     }

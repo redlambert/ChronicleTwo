@@ -24,6 +24,7 @@
 #include "assets/data_registry.hpp"
 #include "character_motion.hpp"
 #include "log/game_output.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "mg_memory.hpp"
 #include "platform/arena.hpp"
@@ -1216,7 +1217,8 @@ std::optional<dc2::memory::ArenaBinding> BindingProof(const mgCMemory &memory, c
     // The log is written on another thread, so it is flushed first or the reason is lost with the abort.
     CT_LOG_CRITICAL(Memory, "arena binding extent {} has no live source allocation (mg_memory.cpp line {})", size,
                     where.line());
-    LogFlush();
+    dc2::diag::Note("stop", "memory safety stop: arena binding with no live source");
+    dc2::diag::Dump("memory safety stop");
     std::abort();
 }
 
@@ -1552,6 +1554,7 @@ void mgCMemory::Free(u_long128 *data) {
     if (found == nullptr) {
         // Retail halts here. A host process that spins would hang the test run, so it aborts instead.
         CT_LOG_CRITICAL(Memory, "Illegal Free Memory {}", static_cast<void *>(data));
+        dc2::diag::Dump("illegal free");
         LogFlush();
         std::abort();
     }
@@ -1709,6 +1712,7 @@ void mgCMemory::stSetBuffer(u_long128 *buffer, int size) {
     const auto binding = BindingProof(*this, buffer, static_cast<std::size_t>(size) * sizeof(u_long128));
     if (!binding || !dc2::memory::BindingIndependentOf(*binding, *this)) {
         const std::string_view arena_name(name, strnlen(name, sizeof(name)));
+        dc2::diag::Notef("stop", "rebind refused for memory '{}': bound to {}, asked {}", arena_name, stack_size, size);
         CT_LOG_CRITICAL(Memory, "rebind refused: '{}' [{}] bound to {} quadwords at {} (used {}), asked {} at {}",
                         arena_name, static_cast<const void *>(this), stack_size, static_cast<const void *>(stack),
                         stack_used, size, static_cast<const void *>(buffer));

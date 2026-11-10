@@ -28,7 +28,9 @@
 #include "gamepad.hpp"
 #include "helpmes.hpp"
 #include "log/game_output.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
+#include "profile.hpp"
 #include "main.hpp"
 #include "mainloop.hpp"
 #include "mapjump.hpp"
@@ -1012,11 +1014,6 @@ struct TownSectionTimer {
 };
 
 TownSectionTimer TownSectionLoad;
-
-/**
- * Diagnostic: logs town frames that run long.
- */
-std::chrono::steady_clock::time_point TownFrameLast{};
 } // namespace
 
 /**
@@ -1028,7 +1025,11 @@ int SubMapLoadStep() {
     CScene *scene = {};
 
     const auto step_start = TownSectionTimer::Clock::now();
-    const int  step_result = MainScene->LoadMapBGStep(nullptr);
+    int        step_result = 0;
+    {
+        CT_PROFILE_ZONE("Town section load step");
+        step_result = MainScene->LoadMapBGStep(nullptr);
+    }
     if (TownSectionLoad.section >= 0) {
         TownSectionLoad.step_max_ms = std::max(TownSectionLoad.step_max_ms,
                                                TownSectionTimer::Ms(TownSectionTimer::Clock::now() - step_start));
@@ -1038,12 +1039,21 @@ int SubMapLoadStep() {
         if (SubMapLoadBG != 0) {
             const auto finish_start = TownSectionTimer::Clock::now();
             SubMapLoadBG = 0;
-            MainScene->SetActive(SCENE_DATA_MAP, 1);
-            MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
-            MainScene->PreLoadVillagerEnd();
+            {
+                CT_PROFILE_ZONE("Town section switch on");
+                MainScene->SetActive(SCENE_DATA_MAP, 1);
+            }
+            {
+                CT_PROFILE_ZONE("Town section villagers");
+                MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
+                MainScene->PreLoadVillagerEnd();
+            }
             char *name = GetMapName(now_load_map_no, nullptr);
             scene = MainScene;
-            EditMapInitEvent(now_load_map_no, static_cast<CEditMap *>(scene->GetMap(scene->GetMapID(name))));
+            {
+                CT_PROFILE_ZONE("Town section events");
+                EditMapInitEvent(now_load_map_no, static_cast<CEditMap *>(scene->GetMap(scene->GetMapID(name))));
+            }
             if (TownSectionLoad.section == now_load_map_no) {
                 const auto now = TownSectionTimer::Clock::now();
                 CT_LOG_INFO(Town, "town section {} ({}) loaded in {:.0f} ms; player held waiting {:.0f} ms; "
@@ -1053,6 +1063,9 @@ int SubMapLoadStep() {
                             TownSectionTimer::Ms(now - TownSectionLoad.start), TownSectionLoad.held_ms,
                             TownSectionLoad.start_ms, TownSectionLoad.villager_ms, TownSectionLoad.steps,
                             TownSectionLoad.step_max_ms, TownSectionTimer::Ms(now - finish_start));
+                dc2::diag::Notef("section", "town section {} loaded in {:.0f} ms (finish step {:.0f} ms)",
+                                 name != nullptr ? name : "?", TownSectionTimer::Ms(now - TownSectionLoad.start),
+                                 TownSectionTimer::Ms(now - finish_start));
                 TownSectionLoad.section = -1;
             }
             now_load_map_no = -1;
@@ -1065,20 +1078,7 @@ int SubMapLoadStep() {
 }
 
 int EditLoop() {
-    {
-        // A frame at 30 per second takes 33 ms; report town frames well past that (loads show up here too).
-        const auto now = std::chrono::steady_clock::now();
-        if (TownFrameLast == std::chrono::steady_clock::time_point{}) {
-            CT_LOG_INFO(Town, "town slow frame watch: on (logs town frames over 45 ms)");
-        } else {
-            const double frame_ms = std::chrono::duration<double, std::milli>(now - TownFrameLast).count();
-            if (frame_ms > 45.0) {
-                CT_LOG_INFO_LIMIT(std::chrono::milliseconds{500}, Town, "town slow frame: {:.1f} ms, section loading {}",
-                                  frame_ms, now_load_map_no >= 0 ? "yes" : "no");
-            }
-        }
-        TownFrameLast = now;
-    }
+    CT_PROFILE_ZONE("Town update");
     static int       old_cm;
     CMap            *map = {};
     CCharacter2     *chara = {};
@@ -1362,6 +1362,7 @@ int EditLoop() {
                 TownSectionLoad.section = next_sub_map;
                 TownSectionLoad.start = TownSectionTimer::Clock::now();
                 TownSectionLoad.held_ms = 0.0;
+                dc2::diag::Notef("section", "town section {} starts loading", next_sub_map);
                 TownSectionLoad.step_max_ms = 0.0;
                 TownSectionLoad.steps = 0;
                 LoadSubMap(MainScene, next_sub_map, 1);
@@ -1807,8 +1808,11 @@ int EditLoop() {
     }
 
     mgFlushRenderInfo();
-    EditEvent.Draw(MainScene);
-    EditDraw();
+    {
+        CT_PROFILE_ZONE("Town draw");
+        EditEvent.Draw(MainScene);
+        EditDraw();
+    }
     debug_closed = 0;
 
     if (DebugFlag != 0) {

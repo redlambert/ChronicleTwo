@@ -25,6 +25,7 @@
 #include "gamepad.hpp"
 #include "inventmn.hpp"
 #include "log/game_output.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "platform/datapacks.hpp"
 #include "platform/texture_catalog.hpp"
@@ -2872,6 +2873,7 @@ void ReportMakePrefetch() {
 } // namespace
 
 int MenuMainInit(MENU_INIT_ARG *arg) {
+    dc2::diag::Note("menu", "main menu opens");
     menuworld::MenuOpening(arg);
     const int result = MenuInitCore(arg);
     PrefetchMakeBackground();
@@ -2879,6 +2881,7 @@ int MenuMainInit(MENU_INIT_ARG *arg) {
 }
 
 int MenuMainExit() {
+    dc2::diag::Note("menu", "main menu closes");
     menuworld::MenuClosed();
     return MenuExitCore();
 }

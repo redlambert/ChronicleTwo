@@ -15,6 +15,7 @@
 #include "editmap.hpp"
 #include "effscript.hpp"
 #include "font.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
@@ -770,6 +771,7 @@ int CSceneCharacter::AssignData(dc2::scene::CharacterResource new_character, std
     stack = character.Producer();
     dc2::text::Copy(name, character_name);
     status = SCENE_DATA_ASSIGNED;
+    dc2::diag::Notef("chara", "scene character '{}' added (memory {})", character_name, static_cast<const void *>(stack));
     return 1;
 }
 
@@ -1296,11 +1298,6 @@ bool ReleaseRetiringExtensionPacks(CSceneCharacter &slot, const mgCMemory &memor
  * Drops scene borrowers before the explicit producer storage is retired.
  */
 void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::ArenaResetKind kind) {
-    static bool announced = false;
-    if (!announced) {
-        announced = true;
-        CT_LOG_INFO(Memory, "scene removal log: on (lists any character a stack clear takes out of a scene)");
-    }
     bool retired;
     do {
         retired = false;
@@ -1316,12 +1313,16 @@ void RetireSceneResources(CScene &scene, const mgCMemory &memory, dc2::memory::A
             if ((slot.Resource().HasValue() || slot.resource_lifetime.HasValue()) &&
                 (!slot.ResourcesLive() || slot.ResourcesWouldRetireOnReset(memory, kind))) {
                 if (slot.ResourcesLive() && ReleaseRetiringExtensionPacks(slot, memory, kind)) {
+                    dc2::diag::Notef("chara", "scene character {} ({}) kept, extra cutscene animations released", index,
+                                     dc2::text::View(slot.name));
                     CT_LOG_INFO(Memory, "scene character {} ({}) kept: released its extra cutscene animations "
                                         "before arena '{}' was reset",
                                 index, dc2::text::View(slot.name),
                                 std::string_view(memory.name, strnlen(memory.name, sizeof(memory.name))));
                     continue;
                 }
+                dc2::diag::Notef("chara", "scene character {} ({}) removed by a stack {}", index, dc2::text::View(slot.name),
+                                 kind == dc2::memory::ArenaResetKind::Stack ? "clear" : "rebind");
                 CT_LOG_WARN(Memory, "scene character {} ({}) removed by {} of arena '{}' [{}]: it still holds {}",
                             index, dc2::text::View(slot.name),
                             kind == dc2::memory::ArenaResetKind::Stack ? "a clear" : "a rebind",
@@ -1371,6 +1372,7 @@ void CScene::AssignStack(int index) {
                     index - 1, index);
         return;
     }
+    dc2::diag::Notef("stack", "share stack {} from stack {}", index, index - 1);
     RetireSceneResources(*this, *stack[index], dc2::memory::ArenaResetKind::Rebind);
     if (!stack[index]->stShareBuffer(*stack[index - 1], std::span(source, static_cast<std::size_t>(remaining)))) {
         CT_LOG_WARN(Memory, "scene stack {}: not shared, stack {} refused to share {} quadwords", index, index - 1,
@@ -2310,6 +2312,7 @@ void CScene::ClearStack(int index) {
     if (index < 0 || index >= stack_num || static_cast<std::size_t>(index) >= std::size(stack)) {
         return;
     }
+    dc2::diag::Notef("stack", "clear stack {} (and reset every stack after it)", index);
     const int count = std::min(stack_num, static_cast<int>(std::size(stack)));
     for (int i = index; i < count; i++) {
         mgCMemory *memory = stack[i];

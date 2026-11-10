@@ -1,6 +1,7 @@
 #include "common.h"
 #include "mw_runtime.h"
 #include "log/log.hpp"
+#include "diag/recorder.hpp"
 
 #include <libcdvd.h>
 
@@ -13493,6 +13494,7 @@ static int _SND_LOAD_SOUND(dc2::script::RunArguments stack, int argc) {
     }
 
     CT_LOG_INFO(Audio, "event sound: slot {} loaded {} as sound {}", port, std::string(file_name), sound_id);
+    dc2::diag::Notef("sound", "event sound slot {} loaded {}", port, std::string(file_name));
     EdEventInfo.last_snd_id = sound_id;
     return true;
 }
