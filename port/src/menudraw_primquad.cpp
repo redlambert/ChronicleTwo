@@ -24,11 +24,7 @@ bool IsBackdrop(mgCDrawPrim *prim, mgRect<int> uv, char *name, int width, int he
     return texture && prim->texture.tex0_bits == texture->tex0_bits;
 }
 
-/**
- * Draws a menu wallpaper and fills the widescreen sides with copies of it: mirrored for the original art, or
- * repeating when tiled (a datapack replacement whose left and right edges are made to meet).
- */
-void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float artwork_width, bool tiled) {
+void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float artwork_width) {
     const auto extent = mgPortVisibleExtent();
     const bool wide = extent.left < 0 || extent.right > mgScreenWidth;
     uint8_t    color[4];
@@ -69,8 +65,8 @@ void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float a
         // revealed inside the retail frame. Include the authored edge padding
         // at the settled joins (Make starts at 1, Character ends at 511).
         const float left_join = left <= 2 ? std::max(0.0f, left) : 0.0f;
-        bool        reflected = !tiled;
-        for (float edge = left; extent.left < edge; edge -= span, reflected = reflected != !tiled) {
+        bool        reflected = true;
+        for (float edge = left; extent.left < edge; edge -= span, reflected = !reflected) {
             const float end = std::max(extent.left, edge - span);
             const float start = std::min(left_join, edge);
             if (start <= end) {
@@ -81,8 +77,8 @@ void DrawBackdrop(mgCDrawPrim &prim, mgRect<float> rect, mgRect<int> uv, float a
             append(end, start, start_u + (edge - end) * rate, start_u + (edge - start) * rate);
         }
         const float right_join = right >= mgScreenWidth - 2 ? std::min<float>(mgScreenWidth, left + span) : mgScreenWidth;
-        reflected = !tiled;
-        for (float edge = left + span; extent.right > edge; edge += span, reflected = reflected != !tiled) {
+        reflected = true;
+        for (float edge = left + span; extent.right > edge; edge += span, reflected = !reflected) {
             const float end = std::min(extent.right, edge + span);
             const float start = std::max(right_join, edge);
             if (start >= end) {
@@ -133,10 +129,7 @@ void PrimQuad<float>(mgCDrawPrim *prim, mgRect<float> put_rect, mgRect<int> tex_
         (IsBackdrop(prim, tex_rect, character_name, 513, 768) ||
          IsBackdrop(prim, tex_rect, invent_name, 512, 416, 48) ||
          IsBackdrop(prim, tex_rect, options_name, 512, 448, 46))) {
-        const bool tiled = (IsBackdrop(prim, tex_rect, character_name, 513, 768) && MgMenuWallpaperTiled(character_name)) ||
-                           (IsBackdrop(prim, tex_rect, invent_name, 512, 416, 48) && MgMenuWallpaperTiled(invent_name)) ||
-                           (IsBackdrop(prim, tex_rect, options_name, 512, 448, 46) && MgMenuWallpaperTiled(options_name));
-        DrawBackdrop(*prim, put_rect, tex_rect, 512, tiled);
+        DrawBackdrop(*prim, put_rect, tex_rect, 512);
         return;
     }
     PrimQuad_f_(prim, mgRect_f_{.left = put_rect.left, .top = put_rect.top, .right = put_rect.right, .bottom = put_rect.bottom},
@@ -152,8 +145,7 @@ void PrimQuad<int>(mgCDrawPrim *prim, mgRect<int> put_rect, mgRect<int> tex_rect
     if (IsBackdrop(prim, tex_rect, frame_name, 704, 416)) {
         // Preserve the authored lens position. Full-frame sprite cover scaling
         // moves its alpha mask away from the model camera, even at 4:3.
-        DrawBackdrop(*prim, mgRect<float>(put_rect.left, put_rect.top, put_rect.right, put_rect.bottom), tex_rect, 700,
-                     MgMenuWallpaperTiled(frame_name));
+        DrawBackdrop(*prim, mgRect<float>(put_rect.left, put_rect.top, put_rect.right, put_rect.bottom), tex_rect, 700);
         return;
     }
     PrimQuad_i_(prim, mgRect_i_{.left = put_rect.left, .top = put_rect.top, .right = put_rect.right, .bottom = put_rect.bottom},

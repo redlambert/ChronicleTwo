@@ -8127,6 +8127,8 @@ constexpr int kWindUpTicks = 8;
 
 bool windup_active = false;
 bool windup_ready = false;
+// Set when a glow-up has already played the transformation sound, so the finished swap does not play it again.
+bool windup_sounded = false;
 int  windup_request = -1;
 int  windup_ticks = 0;
 int  windup_loop = -1;
@@ -8279,8 +8281,11 @@ int KeyMainCharaBG() {
             // A quick loadout loads the same character again with other equipment: the effect, but no name or sound.
             if (!PortQuickLoadoutReloading()) {
                 PortShowQuickChangeBanner(quick_change_chara);
-                MenuSePlay(SYSTEM_SE_TRANSFORM);
+                if (!windup_sounded) {
+                    MenuSePlay(SYSTEM_SE_TRANSFORM);
+                }
             }
+            windup_sounded = false;
             PortQuickLoadoutReloadDone();
             change_fx_pending = true;
             change_fx_loop = PortLoopNo;
@@ -8343,6 +8348,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
             windup_active = false;
             windup_ready = false;
             windup_request = -1;
+            windup_sounded = false;
             return -1;
         }
 
@@ -8366,10 +8372,13 @@ int PortQuickChangeWindUp(int request, bool eligible) {
     windup_request = request;
     windup_ticks = 0;
     windup_loop = PortLoopNo;
+    // The transformation sound starts with the glow, so it plays through the loading pause instead of after it.
+    MenuSePlay(SYSTEM_SE_TRANSFORM);
+    windup_sounded = true;
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: glowing up in power-up gold for {} ticks before the swap",
+        CT_LOG_INFO(Menu, "quick change: glowing up in power-up gold for {} ticks, transformation sound at the press",
                     kWindUpTicks);
     }
     return -1;
@@ -8394,6 +8403,7 @@ void StepQuickChangeWindUp() {
         windup_active = false;
         windup_ready = false;
         windup_request = -1;
+        windup_sounded = false;
         return;
     }
 
