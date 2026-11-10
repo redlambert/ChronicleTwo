@@ -327,7 +327,11 @@ std::vector<Page> MakePages() {
                                 Resolution(),
                                 VSync(),
                                 Number<&Config::max_fps>("video.max_fps", "Frame cap", "Limits display frames, not game speed.", {0, 30, 50, 60, 75, 90, 100, 120, 144, 165, 180, 240, 360}, 1, " FPS"),
+#ifdef __SWITCH__
+                                Choice<&Config::interpolation>("video.interpolation", "Frame rate", "60 FPS blends in-between frames for smoother motion.\n30 FPS is lighter on busy scenes.", {"30 FPS", "60 FPS"}),
+#else
                                 Choice<&Config::interpolation>("video.interpolation", "Interpolation", "Smooths display frames between game ticks.", {"Off", "On"}),
+#endif
                                 Choice<&Config::aspect>("video.aspect", "Aspect ratio", "Auto fills the window. 4:3 adds black side bars.", {"Auto", "4:3"}),
                                 Number<&Config::ui_scale>("video.ui_scale", "UI scale", "Scales menus and HUD. Large values can crop the UI.\nUse Left to reduce the scale if it no longer fits.", {0.5, 0.65, 0.75, 0.85, 1, 1.1, 1.25, 1.5}, 100, "%"),
                                 Choice<&Config::font_sharp>("video.text_font", "Text font", "Sharp draws the letters as outlines, clear at any\n"
