@@ -70,6 +70,10 @@ function script.on_start()
 	if value == 1 then
 		effect.set_sprite_color(0, 225.0, 220.0, 0.0, 0.0, 3)
 	end
+	-- Port: variant 2 is the quick change's cream white, the colour of its original stars.
+	if value == 2 then
+		effect.set_sprite_color(0, 255.0, 244.0, 208.0, 0.0, 3)
+	end
 	effect.set_sprite_visible(0, 0, 3)
 	effect.set_sprite_size(0, 20.0, 20.0, 3)
 	effect.set_sprite_position(0, 0.0, 0.0, 0.0, 3)
@@ -89,6 +93,12 @@ function script.on_start()
 		effect.set_script_value(2, 220.0)
 		effect.set_script_value(3, 0.0)
 	end
+	if value == 2 then
+		effect.set_sprite_color(3, 255.0, 244.0, 208.0, 128.0, 120)
+		effect.set_script_value(1, 255.0)
+		effect.set_script_value(2, 244.0)
+		effect.set_script_value(3, 208.0)
+	end
 	effect.set_sprite_visible(3, 0, 120)
 	effect.set_sprite_size(3, 6.0, 6.0, 120)
 	effect.set_sprite_position(3, 0.0, 0.0, 0.0, 120)
@@ -105,6 +115,12 @@ function script.on_start()
 		effect.set_sprite_color(123, 225.0, 220.0, 0.0, 36.0, 9)
 		effect.set_script_value(4, 225.0)
 		effect.set_script_value(5, 220.0)
+		effect.set_script_value(6, 128.0)
+	end
+	if value == 2 then
+		effect.set_sprite_color(123, 255.0, 244.0, 208.0, 36.0, 9)
+		effect.set_script_value(4, 255.0)
+		effect.set_script_value(5, 244.0)
 		effect.set_script_value(6, 128.0)
 	end
 	effect.set_sprite_visible(123, 0, 9)

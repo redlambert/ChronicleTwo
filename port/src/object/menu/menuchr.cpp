@@ -8112,11 +8112,11 @@ constexpr gfx::InterpKey kBannerInterpKey = 0x514342414E4E4552;
 
 // Character-change effect timing in game frames, adapted from Dark Cloud's GAME_TASK_CHARA_CHANGED.
 constexpr int kChangeFadeFrames = 24;
-// The swap glows in the colour the game gives power-up items (effparamtbl in menusys.cpp), whose sparkle the new
-// character also gets in dungeons: the item-use recovery effect in its power-up variant.
-constexpr s16 kChangeTint[3] = {250, 220, 64};
+// The swap glows in cream white, the colour of its original stars, and in dungeons the new character gets the
+// item-use recovery sparkle in a matching cream variant (variant 2, added in eff01.assets/n_heal.luau).
+constexpr s16 kChangeTint[3] = {255, 244, 208};
 char          kChangeEffectName[] = "\x92\xCA\x8F\xED\x89\xF1\x95\x9C";
-constexpr int kChangeEffectPowerUp = 1;
+constexpr int kChangeEffectCream = 2;
 
 bool change_fx_pending = false;
 int  change_fx_loop = -1;
@@ -8378,7 +8378,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: glowing up in power-up gold for {} ticks, transformation sound at the press",
+        CT_LOG_INFO(Menu, "quick change: glowing up in cream for {} ticks, transformation sound at the press",
                     kWindUpTicks);
     }
     return -1;
@@ -8532,11 +8532,11 @@ void PortStepQuickChangeEffect() {
         if (PortLoopNo == LOOP_DUNGEON && FxScriptMan != nullptr &&
             FxScriptMan->CreateEffSpt(FxScriptMan->SearchBaseNo(kChangeEffectName), 0, 0) != nullptr) {
             FxScriptMan->SetScriptTargetId(0, -1, -1);
-            FxScriptMan->SetValue(0, kChangeEffectPowerUp, 0, -1);
+            FxScriptMan->SetValue(0, kChangeEffectCream, 0, -1);
             static bool logged = false;
             if (!logged) {
                 logged = true;
-                CT_LOG_INFO(Menu, "quick change: new character gets the power-up sparkle");
+                CT_LOG_INFO(Menu, "quick change: new character gets the cream sparkle");
             }
         }
     }
