@@ -130,6 +130,17 @@ if(CT_LUAU_PRECOMPILE)
         get_filename_component(compiled_directory ${relative} DIRECTORY)
         install(FILES ${compiled} DESTINATION ${CMAKE_INSTALL_BINDIR}/scripts/${compiled_directory})
     endforeach()
+    # All the bytecode in one file, scripts/scripts.pack: the game opens it once instead of two files a script, which
+    # is what made first visits slow on the Switch's SD card (tools/luau/pack.py, port/src/luau_runtime.cpp).
+    set(ct_luau_pack ${CMAKE_BINARY_DIR}/scripts/scripts.pack)
+    add_custom_command(OUTPUT ${ct_luau_pack}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/luau/pack.py
+            --scripts ${CMAKE_BINARY_DIR}/scripts --out ${ct_luau_pack}
+        DEPENDS ${CT_LUAU_COPIES} ${CMAKE_SOURCE_DIR}/tools/luau/pack.py
+        COMMENT "Packing the precompiled scripts"
+        VERBATIM)
+    list(APPEND CT_LUAU_COPIES ${ct_luau_pack})
+    install(FILES ${ct_luau_pack} DESTINATION ${CMAKE_INSTALL_BINDIR}/scripts)
 endif()
 add_custom_target(ct_luau_scripts DEPENDS ${ct_luau_stamp} ${CT_LUAU_COPIES} ${CMAKE_BINARY_DIR}/generated/luau/copied.txt)
 add_dependencies(darkchronicle ct_luau_scripts)

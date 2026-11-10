@@ -15,9 +15,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -871,6 +873,187 @@ std::vector<std::filesystem::path> PrecompiledFiles(const std::filesystem::path 
 
 /**
  *
+ * scripts/scripts.pack (tools/luau/pack.py): every precompiled script in one file. Opening it once instead of two
+ * files a script is what makes first visits fast on the Switch's SD card. A script missing from the pack, or one
+ * whose bytecode fails its check or does not load, falls back to the loose .luau/.luauc files, and the log says so.
+ *
+ */
+struct ScriptPack {
+    struct Module {
+        std::uint64_t offset = 0;
+        std::uint32_t size = 0;
+        std::uint64_t check = 0;
+    };
+    std::filesystem::path                     root;  // the scripts directory the pack was opened from
+    bool                                      tried = false;
+    std::FILE                                *file = nullptr;
+    std::unordered_map<std::string, Module>   modules;  // path relative to root, forward slashes
+    std::uint64_t                             loaded = 0;     // scripts loaded from the pack
+    std::uint64_t                             missing = 0;    // scripts not in the pack
+    std::uint64_t                             fallbacks = 0;  // in the pack but unusable
+    double                                    read_ms = 0.0;  // reading bytecode from the pack
+};
+
+ScriptPack script_pack;
+
+void CloseScriptPack() {
+    if (script_pack.file != nullptr) {
+        std::fclose(script_pack.file);
+    }
+    script_pack.file = nullptr;
+    script_pack.modules.clear();
+}
+
+/**
+ *
+ * Opens scripts/scripts.pack and reads its index, once per scripts directory. Logs why when it cannot.
+ *
+ */
+void OpenScriptPack(const std::filesystem::path &root) {
+    if (script_pack.tried && script_pack.root == root) {
+        return;
+    }
+    CloseScriptPack();
+    script_pack.tried = true;
+    script_pack.root = root;
+    const std::filesystem::path path = root / "scripts.pack";
+    const auto                  start = std::chrono::steady_clock::now();
+    std::FILE                  *file = std::fopen(Utf8(path).c_str(), "rb");
+    if (file == nullptr) {
+        CT_LOG_INFO(Script, "script pack: none at {}; scripts load one file at a time", PathsDisplay(path));
+        dc2::diag::Note("script", "no script pack; loading loose files");
+        return;
+    }
+    const auto fail = [&](std::string_view why) {
+        CT_LOG_WARN(Script, "script pack: {} is unusable ({}); scripts load one file at a time", PathsDisplay(path),
+                    why);
+        dc2::diag::Notef("script", "script pack unusable: {}", why);
+        std::fclose(file);
+        script_pack.modules.clear();
+    };
+    std::array<unsigned char, 12> header{};
+    if (std::fseek(file, 0, SEEK_END) != 0) {
+        fail("cannot seek");
+        return;
+    }
+    const long end = std::ftell(file);
+    if (end < static_cast<long>(header.size()) || std::fseek(file, 0, SEEK_SET) != 0 ||
+        std::fread(header.data(), 1, header.size(), file) != header.size()) {
+        fail("too short");
+        return;
+    }
+    const auto u32 = [](const unsigned char *bytes) {
+        return static_cast<std::uint32_t>(bytes[0]) | static_cast<std::uint32_t>(bytes[1]) << 8 |
+               static_cast<std::uint32_t>(bytes[2]) << 16 | static_cast<std::uint32_t>(bytes[3]) << 24;
+    };
+    const auto u64 = [&](const unsigned char *bytes) {
+        return static_cast<std::uint64_t>(u32(bytes)) | static_cast<std::uint64_t>(u32(bytes + 4)) << 32;
+    };
+    if (std::memcmp(header.data(), "CTPK", 4) != 0) {
+        fail("not a script pack");
+        return;
+    }
+    if (u32(header.data() + 4) != 1) {
+        fail(std::format("version {} is not 1", u32(header.data() + 4)));
+        return;
+    }
+    const std::uint32_t count = u32(header.data() + 8);
+    const auto          file_size = static_cast<std::uint64_t>(end);
+    script_pack.modules.reserve(count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        std::array<unsigned char, 2> length_bytes{};
+        if (std::fread(length_bytes.data(), 1, 2, file) != 2) {
+            fail(std::format("index ends early at script {} of {}", index, count));
+            return;
+        }
+        const std::size_t length = static_cast<std::size_t>(length_bytes[0]) | static_cast<std::size_t>(length_bytes[1]) << 8;
+        std::string       name(length, '\0');
+        std::array<unsigned char, 20> fields{};
+        if (std::fread(name.data(), 1, length, file) != length || std::fread(fields.data(), 1, fields.size(), file) != fields.size()) {
+            fail(std::format("index ends early at script {} of {}", index, count));
+            return;
+        }
+        const ScriptPack::Module entry{u64(fields.data()), u32(fields.data() + 8), u64(fields.data() + 12)};
+        if (entry.offset > file_size || entry.size > file_size - entry.offset) {
+            fail(std::format("{} points past the end of the file", name));
+            return;
+        }
+        script_pack.modules.emplace(std::move(name), entry);
+    }
+    script_pack.file = file;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CT_LOG_INFO(Script,
+                "script pack: {} scripts in {} ({:.1f} MiB), index read in {:.0f} ms; while it is there, edited .luau "
+                "files beside it are ignored (delete scripts.pack to test an edited script)",
+                script_pack.modules.size(), PathsDisplay(path), static_cast<double>(file_size) / 1048576.0, ms);
+    dc2::diag::Notef("script", "script pack opened: {} scripts, index in {:.0f} ms", script_pack.modules.size(), ms);
+}
+
+/**
+ *
+ * A module's bytecode from the script pack, or nothing when there is no pack, the module is not in it, or its bytes
+ * fail their check (each case is logged and counted).
+ *
+ */
+std::optional<std::string> ReadPackedBytecode(const std::filesystem::path &file) {
+    // Finding the scripts directory checks the SD card, so the pack remembers it; SetScriptsRoot starts over.
+    std::optional<std::filesystem::path> root;
+    if (script_pack.tried) {
+        root = script_pack.root;
+    } else {
+        root = ScriptsRoot();
+    }
+    if (!root) {
+        return std::nullopt;
+    }
+    OpenScriptPack(*root);
+    if (script_pack.file == nullptr) {
+        return std::nullopt;
+    }
+    const std::filesystem::path relative = file.lexically_relative(*root);
+    const std::string           key = relative.generic_string();
+    const auto                  found = script_pack.modules.find(key);
+    if (relative.empty() || found == script_pack.modules.end()) {
+        ++script_pack.missing;
+        CT_LOG_INFO(Script, "script pack: {} is not in the pack; loading its own files", PathsDisplay(file));
+        dc2::diag::Notef("script", "not in pack: {}", key);
+        return std::nullopt;
+    }
+    const auto  start = std::chrono::steady_clock::now();
+    std::string bytecode(found->second.size, '\0');
+    const bool  read = std::fseek(script_pack.file, static_cast<long>(found->second.offset), SEEK_SET) == 0 &&
+                      std::fread(bytecode.data(), 1, bytecode.size(), script_pack.file) == bytecode.size();
+    script_pack.read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (!read) {
+        ++script_pack.fallbacks;
+        CT_LOG_WARN(Script, "script pack: cannot read {} from the pack; loading its own files", key);
+        dc2::diag::Notef("script", "pack read failed: {}", key);
+        return std::nullopt;
+    }
+    if (luau_bytecode::SourceHash(bytecode) != found->second.check) {
+        ++script_pack.fallbacks;
+        CT_LOG_WARN(Script, "script pack: {} fails its check in the pack (damaged?); loading its own files", key);
+        dc2::diag::Notef("script", "pack check failed: {}", key);
+        return std::nullopt;
+    }
+    return bytecode;
+}
+
+/**
+ *
+ * Logs the pack's running totals every hundred scripts, so a long session shows how much it is saving.
+ *
+ */
+void LogScriptPackTotals() {
+    if (script_pack.loaded % 100 != 0) {
+        return;
+    }
+    CT_LOG_INFO(Script, "script pack: {} scripts loaded from the pack ({:.0f} ms reading in all), {} not in it, {} unusable",
+                script_pack.loaded, script_pack.read_ms, script_pack.missing, script_pack.fallbacks);
+}
+
+/**
+ *
  * Pushes a module's compiled chunk onto lua, reusing the cached function when the file already compiled.
  *
  */
@@ -885,6 +1068,34 @@ bool PushModuleFunction(lua_State *lua, const std::filesystem::path &file, std::
     lua_pop(lua, 2);
     CT_PROFILE_ZONE("Load script file");
     const auto load_start = std::chrono::steady_clock::now();
+
+    // The script pack first: one already-open file instead of two opens on the SD card.
+    if (const std::optional<std::string> packed = ReadPackedBytecode(file)) {
+        const std::string chunk_name = "@" + PathsDisplay(file);
+        if (luau_load(lua, chunk_name.c_str(), packed->data(), packed->size(), 0) == 0) {
+#ifndef __SWITCH__
+            if (codegen) {
+                luau_codegen_compile(lua, -1);
+            }
+#endif
+            ++script_pack.loaded;
+            CT_LOG_INFO(Script, "luau: loaded packed {}", PathsDisplay(file));
+            dc2::diag::Notef("script", "loaded {} from pack in {:.0f} ms", PathsDisplay(file),
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load_start).count());
+            LogScriptPackTotals();
+            lua_getref(lua, module_cache_ref);
+            lua_pushvalue(lua, -2);
+            lua_setfield(lua, -2, key.c_str());
+            lua_pop(lua, 1);
+            return true;
+        }
+        const char *raw = lua_tostring(lua, -1);
+        ++script_pack.fallbacks;
+        CT_LOG_WARN(Script, "script pack: {} did not load from the pack ({}); loading its own files", PathsDisplay(file),
+                    raw != nullptr ? raw : "unknown error");
+        dc2::diag::Notef("script", "pack load failed: {}", PathsDisplay(file));
+        lua_pop(lua, 1);
+    }
 
     std::ifstream input(file, std::ios::binary);
     if (!input) {
@@ -1701,6 +1912,8 @@ void SetScriptsRoot(const std::filesystem::path &root) {
     }
     modules.clear();
     modules_indexed = false;
+    CloseScriptPack();
+    script_pack.tried = false;
 }
 
 void SetInterruptBudget(std::int64_t interrupts) {
@@ -1718,6 +1931,8 @@ void Shutdown() {
     required_ref = LUA_NOREF;
     modules.clear();
     modules_indexed = false;
+    CloseScriptPack();
+    script_pack.tried = false;
 }
 
 } // namespace luau_runtime

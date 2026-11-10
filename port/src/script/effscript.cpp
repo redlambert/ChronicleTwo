@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -24,6 +25,7 @@
 #include "effscript.hpp"
 #include "event_func.hpp"
 #include "diag/recorder.hpp"
+#include "platform/legacy_encoding.hpp"
 #include "log/game_output.hpp"
 #include "mainloop.hpp"
 #include "map.hpp"
@@ -446,7 +448,10 @@ int CEffectScriptMan::CreateEffSpt(char *name, int user_id, int use_slot) {
         static std::chrono::steady_clock::time_point last_time{};
         const auto                                   now = std::chrono::steady_clock::now();
         if (name != last_name || now - last_time > std::chrono::seconds(1)) {
-            dc2::diag::Notef("effect", "start '{}'{}", name, effect != nullptr ? "" : " (not loaded here)");
+            // Effect names are Japanese (CP932) in the game's data; the log is UTF-8.
+            const std::optional<std::string> readable = legacy_encoding::ReadableText(name);
+            dc2::diag::Notef("effect", "start '{}'{}", readable ? *readable : std::string(name),
+                             effect != nullptr ? "" : " (not loaded here)");
         }
         last_name = name;
         last_time = now;
