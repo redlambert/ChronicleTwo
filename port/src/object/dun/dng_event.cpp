@@ -1011,10 +1011,16 @@ void BattleAreaBGMCtrl() {
         distance = ActiveMonster->IsBattleStyleDist();
     }
 
-    if (distance <= 340.0f) {
-        player->battle_stance = true;
+    // Right after a cutscene (for example Halloween's ending), the dungeon runs a frame before the player character is
+    // back. Skip the stance for that frame; the music logic below doesn't need the player.
+    if (player != nullptr) {
+        player->battle_stance = distance <= 340.0f;
     } else {
-        player->battle_stance = false;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            CT_LOG_INFO(Audio, "battle music: no player character this frame, stance skipped");
+        }
     }
 
     if (!(state->pause_flag & DNG_PAUSE_BATTLE_MUSIC) && state->boss_map == 0) {
