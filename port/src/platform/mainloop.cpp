@@ -1343,6 +1343,7 @@ ClsMes PauseMes;
 #include <libgraph.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1486,6 +1487,8 @@ void AutosaveTown() {
         return;
     }
     if (auto spawn = SaveSlotTakePendingSpawn(GetSaveData()->map_no)) {
+        CT_LOG_INFO(Save, "autosave: placing the player at ({:.0f}, {:.0f}, {:.0f}) on map {}, spot section {}, loaded section {}",
+                    spawn->position[0], spawn->position[1], spawn->position[2], spawn->map_no, spawn->sub_map_no, GetSubMapNo());
         chara->SetPosition(spawn->position);
         chara->SetRotation(spawn->rotation);
         chara->ResetDAPosition();
@@ -1495,6 +1498,19 @@ void AutosaveTown() {
         camera->SetRef(spawn->camera_ref);
         autosaved_map = map;
         return;
+    }
+    {
+        // Diagnostic: a player far below any town floor is falling through a part of the map that is not loaded.
+        static bool logged_fall = false;
+        float       position[4];
+        chara->GetPosition(position);
+        if (!logged_fall && std::abs(position[1]) > 2000.0f) {
+            logged_fall = true;
+            CT_LOG_WARN(Save, "town: player falling at ({:.0f}, {:.0f}, {:.0f}) on map {} (save map {}), loaded section {}",
+                        position[0], position[1], position[2], map, GetSaveData()->map_no, GetSubMapNo());
+            dc2::diag::Notef("town", "player falling, loaded section {}", GetSubMapNo());
+            dc2::diag::Dump("player falling");
+        }
     }
     if (AutosaveEnabled() && map != autosaved_map) {
         autosaved_map = map;

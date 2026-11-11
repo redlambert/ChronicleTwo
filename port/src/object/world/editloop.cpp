@@ -2417,6 +2417,10 @@ int EditMapJump(int map_no) {
     InitEditEvent();
     DeleteFileCache();
     textures = &mgTexManager;
+    CT_LOG_INFO(Town, "town load: jump to map {} ({}), save says map {} section {}, last map {}", map_no,
+                EditMapStartingFromLoop ? "town loop start" : "jump inside town",
+                GetSaveData() != nullptr ? GetSaveData()->map_no : -1, GetSaveData() != nullptr ? GetSaveData()->sub_map_no : -1,
+                GetSaveData() != nullptr ? GetSaveData()->prev_map_no : -1);
     sub_map_no = map_no;
 
     if (map_no > 0xA && map_no < 0xF) {
@@ -2570,8 +2574,10 @@ int EditMapJump(int map_no) {
     MainScene->LoadVillager(MapNo, 0x4E);
     NowLoadingBarStep();
 
+    CT_LOG_INFO(Town, "town load: main map {} ready, section to load with it {}", MapNo, sub_map_no);
     if (sub_map_no > 0) {
         loaded_sub = LoadSubMap(MainScene, sub_map_no, 0);
+        CT_LOG_INFO(Town, "town load: section {} {}", sub_map_no, loaded_sub != 0 ? "loaded" : "FAILED to load");
         NowLoadingBarStep();
 
         if (loaded_sub != 0) {
