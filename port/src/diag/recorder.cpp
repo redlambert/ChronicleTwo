@@ -390,7 +390,7 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v1: lease wait, logic, in-between frame cost, 5 s timeline, worst frames named");
+                      "frame parts v2: lease wait, logic, in-between frame cost, 5 s timeline, worst frames named, town sub-zones");
 }
 
 } // namespace

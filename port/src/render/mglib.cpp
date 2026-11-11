@@ -2251,7 +2251,10 @@ void mgEndFrame(mgCDrawManager *manager) {
         lease_got = std::chrono::steady_clock::now();
         bool             tick_rendered = false;
         bool             canonical_endpoint_allowed = true;
-        mgVisualPortFlushUploads();
+        {
+            CT_PROFILE_ZONE("Frame upload flush");
+            mgVisualPortFlushUploads();
+        }
 
         for (int slot = 0; slot < 4; ++slot) {
             MG_PICKZ &pick = mgPickZBuff[slot];
@@ -2278,7 +2281,11 @@ void mgEndFrame(mgCDrawManager *manager) {
                 ClearBars();
                 ++letterbox_clears;
             }
-            gfx::DisplayListRef list = gfx::EndRecording();
+            gfx::DisplayListRef list;
+            {
+                CT_PROFILE_ZONE("Frame recording close");
+                list = gfx::EndRecording();
+            }
             recording = false;
             // An async render thread renders the canonical list while this thread starts its next tick. A pause
             // picture, letterbox clear, colour capture or exit screenshot needs the render before the tick ends.
