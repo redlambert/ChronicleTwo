@@ -48,6 +48,8 @@ inline constexpr int kConfigLanguageMax = 5;
 
 struct Config : HostSettings {
     bool               interpolation = kConfigInterpolationDefault;
+    // video.lens_flare: draws the sun's lens flare in towns and dungeons when the sun is in view.
+    bool lens_flare = true;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;

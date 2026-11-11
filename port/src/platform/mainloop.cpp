@@ -1898,10 +1898,7 @@ void MainLoop() {
             }
             PortAutosaveStep(PortLoopNo);
             GamePerfStep(PortLoopNo);
-            const auto diag_buttons = GamePad__2.pad[0].button;
-            dc2::diag::PollFlareSwitch((diag_buttons & (PAD_L1 | PAD_R1)) == (PAD_L1 | PAD_R1),
-                                       (diag_buttons & PAD_SELECT) != 0);
-            dc2::diag::Tick(PortLoopNo, DiagAreaName(PortLoopNo), (diag_buttons & PAD_SELECT) != 0);
+            dc2::diag::Tick(PortLoopNo, DiagAreaName(PortLoopNo), (GamePad__2.pad[0].button & PAD_SELECT) != 0);
 
             if (GamePad__2.On(PAD_CIRCLE)) {
                 cat_end();

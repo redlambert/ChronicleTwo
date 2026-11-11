@@ -308,6 +308,9 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
     if (name == "video.interpolation") {
         return ReadBool(value, config.interpolation);
     }
+    if (name == "video.lens_flare") {
+        return ReadBool(value, config.lens_flare);
+    }
     if (name == "video.render_thread") {
         return ReadEnum(value, kRenderThreadNames, config.render_thread);
     }
@@ -589,6 +592,7 @@ std::string ConfigSerialize(const Config &config) {
     root["game"]["shared_badge_exp"] = config.shared_badge_exp;
     root["video"]["vsync"] = s.present_mode == ConfigPresentMode::Fifo;
     root["video"]["interpolation"] = config.interpolation;
+    root["video"]["lens_flare"] = config.lens_flare;
     root["video"]["render_thread"] = kRenderThreadNames[static_cast<std::size_t>(config.render_thread)];
     root["video"]["max_fps"] = s.max_fps;
     root["video"]["width"] = s.window_width;

@@ -16,6 +16,7 @@
 #include "gfx/gfx.hpp"
 #include "gfx/profile.hpp"
 #include "log/log.hpp"
+#include "platform/config.hpp"
 #include "present.hpp"
 
 namespace dc2::diag {
@@ -151,7 +152,6 @@ FrameParts                                      g_parts;
 bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
 bool                                            g_flare_enabled = true;
-bool                                            g_flare_minus_was_down = false;
 Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
 std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
@@ -461,8 +461,8 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v4: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
-                      "wait, sun flare switch (L + R + Minus), area report every 30 s, worst frames named, town sub-zones");
+                      "frame parts v5: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
+                      "wait, sun flare setting, area report every 30 s, worst frames named, town sub-zones");
 }
 
 } // namespace
@@ -511,13 +511,13 @@ bool LensFlareEnabled() {
     return g_flare_enabled;
 }
 
-void PollFlareSwitch(bool shoulders_held, bool minus_down) {
-    if (shoulders_held && minus_down && !g_flare_minus_was_down) {
-        g_flare_enabled = !g_flare_enabled;
-        CT_LOG_INFO(Main, "diag: sun flare switched {} (L + R + Minus)", g_flare_enabled ? "on" : "off");
-        Notef("flare", "switched {}", g_flare_enabled ? "on" : "off");
+void FollowFlareSetting() {
+    const bool enabled = ConfigGet().lens_flare;
+    if (enabled != g_flare_enabled) {
+        g_flare_enabled = enabled;
+        CT_LOG_INFO(Main, "diag: sun flare setting {} (Display settings)", enabled ? "on" : "off");
+        Notef("flare", "setting {}", enabled ? "on" : "off");
     }
-    g_flare_minus_was_down = minus_down;
 }
 
 void NoteFrameParts(const FrameParts &parts) {
@@ -543,6 +543,7 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     g_presented_last = presented;
     const bool flare = g_flare_this_frame;
     g_flare_this_frame = false;
+    FollowFlareSetting();
 
     if (frame_ms >= kStall) {
         ++g_area.stalls;
