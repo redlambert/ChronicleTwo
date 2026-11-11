@@ -93,6 +93,8 @@ static CScene *MainScene;
  *
  */
 static int SubMapLoadBG;
+// Port: true while the town loop's own entry (loading a save, arriving from a dungeon or the title) jumps to its map.
+static bool EditMapStartingFromLoop;
 // Port: 1 while a loaded section's villagers are still loading, one per frame.
 static int SubMapFinishPhase;
 static int SubMapVillagerFrames;
@@ -883,7 +885,9 @@ void EditInit(INIT_LOOP_ARG arg) {
         MainScene->LoadSound(0, ReadBufferBytes());
     }
 
+    EditMapStartingFromLoop = true;
     EditMapJump(SearchMapNo(GetMapName(arg.map_no, nullptr)));
+    EditMapStartingFromLoop = false;
     NowLoadingBarStep();
     WaterFrame = nullptr;
     InitEditFlag();
@@ -2421,13 +2425,25 @@ int EditMapJump(int map_no) {
         sub_map_no = -1;
     }
 
-    // Port: an autosave made inside a Palm Brinks section loads that section with the town, as a save made there
-    // would, so the player does not start above an unloaded section and fall forever.
+    // Port: entering Palm Brinks from the town loop's start (loading a save) used to load only the main town. A save
+    // made in a section, or right after leaving a house in one (the game then places the player at that house's
+    // door), starts the player in a section that was never loaded, where they fall forever. Load that section too:
+    // the one an autosave's spot records, else the one the save itself says was loaded.
     if (map_no == 0xA && sub_map_no <= 0) {
-        if (const auto spawn_sub_map = SaveSlotPendingSpawnSubMap(0xA); spawn_sub_map && *spawn_sub_map > 0xA && *spawn_sub_map < 0xF) {
+        const auto spawn_sub_map = SaveSlotPendingSpawnSubMap(0xA);
+        const int  saved_sub_map = GetSaveData() != nullptr ? GetSaveData()->sub_map_no : -1;
+        if (EditMapStartingFromLoop) {
+            CT_LOG_INFO(Town, "town start: Palm Brinks, autosave spot section {}, save's section {}, came from map {}",
+                        spawn_sub_map.value_or(-1), saved_sub_map, GetSaveData() != nullptr ? GetSaveData()->prev_map_no : -1);
+        }
+        if (spawn_sub_map && *spawn_sub_map > 0xA && *spawn_sub_map < 0xF) {
             sub_map_no = *spawn_sub_map;
             CT_LOG_INFO(Town, "autosave: starting in Palm Brinks section {}, loading it with the town", sub_map_no);
             dc2::diag::Notef("section", "autosave spawn loads section {}", sub_map_no);
+        } else if (EditMapStartingFromLoop && saved_sub_map > 0xA && saved_sub_map < 0xF) {
+            sub_map_no = saved_sub_map;
+            CT_LOG_INFO(Town, "town start: loading Palm Brinks section {} with the town, as the save had it loaded", sub_map_no);
+            dc2::diag::Notef("section", "save loads section {}", sub_map_no);
         }
     }
 
