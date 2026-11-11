@@ -745,6 +745,30 @@ int CMdsListSet::LoadPCPFile(char *name, u_int *pack, mgCMemory *memory, int typ
     return true;
 }
 
+bool CMdsListSet::BeginPCPFile(char *name, u_int *pack, mgCMemory *memory, int type, PcpLoad &load) {
+    load = PcpLoad{};
+
+    if (name == nullptr || SearchMdsList(name) != nullptr) {
+        return false;
+    }
+
+    CMdsList *slot = nullptr;
+
+    for (int i = 0; i < mds_list_num && i < static_cast<int>(std::size(mds_list)); i++) {
+        const bool is_free = !mds_list[i].resource_lifetime.IsLive() || !mds_list[i].list || !mds_list[i].name || mds_list[i].num == 0;
+
+        if (is_free) {
+            slot = &mds_list[i];
+        }
+    }
+
+    if (slot == nullptr) {
+        return false;
+    }
+
+    return slot->BeginPCPFile(name, pack, memory, type, load);
+}
+
 int CMdsListSet::DeleteMdsList(char *name) {
     CMdsList *mds_list = SearchMdsList(name);
 
@@ -1099,43 +1123,60 @@ int ModelType(int type) {
 }
 } // namespace
 
-void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int scissor) {
+namespace {
+/**
+ * A model pack being loaded a model at a time: its parsed model list, where the next model goes, and what
+ * LoadPCPFile kept in locals across its loop.
+ */
+struct PcpLoadDetail {
+    mgCMemory                    *memory = nullptr;
+    dc2::memory::ArenaLifetime    lifetime;
+    std::string                   parent;
+    std::vector<ModelEntry>       models;
+    std::size_t                   model = 0;
+    int                           next = 0;
+    std::string                   error;
+    int                           scissor = 0;
+};
+} // namespace
+
+bool CMdsList::BeginPCPFile(char *label, u_int *source, mgCMemory *memory, int scissor, PcpLoad &load) {
+    load = PcpLoad{};
     if (!memory) {
-        return;
+        return false;
     }
     const auto lifetime = dc2::memory::ArenaLifetime::Capture(*memory);
     if (!lifetime.IsLive()) {
-        return;
+        return false;
     }
     const auto parent = AssetDirectoryPath(source);
     if (!parent) {
-        return;
+        return false;
     }
     const auto models = native_config::Read<std::vector<ModelEntry>>(*parent + "/info.cfg.json", "model_list", ParseModelList);
     if (!models) {
-        return;
+        return false;
     }
-    std::string error;
-    const auto  files = datapacks::DirectoryMembers(*parent);
-    const auto  capacity = std::count_if(files.begin(), files.end(), [](const auto &file) { return std::filesystem::path(file).extension() == ".gltf"; });
+    const auto files = datapacks::DirectoryMembers(*parent);
+    const auto capacity = std::count_if(files.begin(), files.end(), [](const auto &file) { return std::filesystem::path(file).extension() == ".gltf"; });
     if (capacity > MDS_PCP_ENTRY_MAX) {
         CT_LOG_ERROR(Data, "model list: too many native models");
-        return;
+        return false;
     }
     const std::size_t label_length = label == nullptr ? 0 : std::strlen(label);
     if (label_length > std::numeric_limits<std::size_t>::max() - 16) {
-        return;
+        return false;
     }
     const std::size_t label_blocks = label == nullptr ? 0 : (label_length + 16) / 16 + 2;
     const std::size_t list_blocks = capacity == 0 ? 0 : (static_cast<std::size_t>(capacity) * sizeof(CMdsInfo) + 15) / 16 + 2;
     if (memory->lock != 0 || memory->stGetRest() <= 0 ||
         label_blocks + list_blocks >= static_cast<std::size_t>(memory->stGetRest())) {
         CT_LOG_ERROR(Data, "model list: insufficient memory for native model entries");
-        return;
+        return false;
     }
     name = label ? CopyName(*memory, label) : nullptr;
     if (label != nullptr && name == nullptr) {
-        return;
+        return false;
     }
     resource_lifetime = lifetime;
     num = static_cast<int>(capacity);
@@ -1143,13 +1184,36 @@ void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int sc
     list = list_storage != nullptr ? new (list_storage) CMdsInfo[num] : nullptr;
     if (num > 0 && list == nullptr) {
         num = 0;
-        return;
+        return false;
     }
-    int next = 0;
-    for (const auto &model : *models) {
+    auto detail = std::make_shared<PcpLoadDetail>();
+    detail->memory = memory;
+    detail->lifetime = lifetime;
+    detail->parent = *parent;
+    detail->models = *models;
+    detail->scissor = scissor;
+    load.list = this;
+    load.detail = detail;
+    return true;
+}
+
+bool CMdsList::StepPCPFile(PcpLoad &load) {
+    auto *detail = static_cast<PcpLoadDetail *>(load.detail.get());
+    if (load.list != this || detail == nullptr || detail->model >= detail->models.size()) {
+        return true;
+    }
+    const auto  &model = detail->models[detail->model++];
+    int         &next = detail->next;
+    mgCMemory   *memory = detail->memory;
+    const auto  &lifetime = detail->lifetime;
+    const auto  *parent = &detail->parent;
+    std::string &error = detail->error;
+    const int    scissor = detail->scissor;
+    load.last_model = model.model.value_or(std::string{});
+    [&] {
         // MDS past the table, or naming a model already listed, leaves no current entry.
         if (next >= num || (model.model && GetList(const_cast<char *>(model.model->c_str())))) {
-            continue;
+            return;
         }
         CMdsInfo *current = &list[next++];
         current->Initialize();
@@ -1165,26 +1229,26 @@ void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int sc
             current->far_fade = model.far_fade;
         }
         if (current->name == nullptr) {
-            continue;
+            return;
         }
         const auto path = *parent + "/" + std::filesystem::path(current->name).filename().generic_string();
         if (current->type == MDS_TYPE_MODEL) {
-            mgLoadData load{};
-            load.memory = memory;
-            current->frame = model_assets::LoadModel(path, load, error);
+            mgLoadData model_load{};
+            model_load.memory = memory;
+            current->frame = model_assets::LoadModel(path, model_load, error);
         } else if (current->type == MDS_TYPE_COLLISION || current->type == MDS_TYPE_CAMERA_COLLISION) {
             current->frame = LoadCollisionModel(path, memory);
         } else if (current->type == MDS_TYPE_CHARA) {
             auto *character = dc2::memory::NewObject<CCharacter2>(*memory);
             if (character == nullptr) {
-                continue;
+                return;
             }
             character->Initialize();
             model_assets::CharacterLoadOptions options{.model_memory = memory, .motion_memory = memory, .image_memory = memory, .textures = &mgTexManager, .parent = nullptr, .texture_block = -1, .outline = false};
             if (model_assets::LoadCharacter(*character, path, "info", options, error)) {
                 current->character_storage = dc2::memory::ArenaBuffer::Bind(*memory, std::span<u8>(reinterpret_cast<u8 *>(character), sizeof(CCharacter2)));
                 if (current->character_storage.Bytes().size() != sizeof(CCharacter2)) {
-                    continue;
+                    return;
                 }
                 current->chara = character;
                 current->frame = character->CObjectFrame::frame;
@@ -1200,7 +1264,7 @@ void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int sc
                 current->frame = nullptr;
                 current->chara = nullptr;
                 current->character_storage = {};
-                continue;
+                return;
             }
         }
         if (scissor && current->frame) {
@@ -1208,5 +1272,15 @@ void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int sc
             attributes.clip_enable = 1;
             current->frame->SetAttrParam(attributes, 1, MG_FRAME_ATTR_CLIP);
         }
+    }();
+    return detail->model >= detail->models.size();
+}
+
+void CMdsList::LoadPCPFile(char *label, u_int *source, mgCMemory *memory, int scissor) {
+    PcpLoad load;
+    if (!BeginPCPFile(label, source, memory, scissor, load)) {
+        return;
+    }
+    while (!StepPCPFile(load)) {
     }
 }

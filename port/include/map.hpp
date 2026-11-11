@@ -961,6 +961,13 @@ public:
      */
     int LoadDataItem(unsigned int *pcp_pack, unsigned int *img_pack, int phase, int index, int *block,
                      mgCEnterIMGInfo *info, mgCMemory *stack);
+    /**
+     *
+     * Port: begins the index-th model pack of LoadData a model at a time; load is left empty when the pack has
+     * nothing to build. Returns 0 when the map has no index-th pack name.
+     *
+     */
+    int BeginDataPack(unsigned int *pcp_pack, int index, PcpLoad &load, mgCMemory *stack);
 
     /**
      *

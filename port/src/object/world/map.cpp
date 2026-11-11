@@ -2175,6 +2175,28 @@ int CMap::LoadDataItem(unsigned int *pcp_pack, unsigned int *img_pack, int phase
     return 1;
 }
 
+int CMap::BeginDataPack(unsigned int *pcp_pack, int index, PcpLoad &load, mgCMemory *stack) {
+    load = PcpLoad{};
+
+    if (mds_list_set == nullptr) {
+        return 0;
+    }
+
+    char *pcp_name = map_info.GetPCPName(index);
+
+    if (pcp_name == nullptr) {
+        return 0;
+    }
+
+    unsigned int *file = AssetDirectoryRead(pcp_pack, pcp_name, nullptr);
+
+    if (file != nullptr) {
+        mds_list_set->BeginPCPFile(pcp_name, file, stack, map_info.all_scissor, load);
+    }
+
+    return 1;
+}
+
 int CheckFuncEvent(CFuncPoint *point, float *pos, int check_type, MapEventInfo *info, float *out_dist) {
     sceVu0FMATRIX matrix;
     sceVu0FVECTOR world_position;

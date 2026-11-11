@@ -433,6 +433,10 @@ struct SlicedDataStep {
     int             next_block = 0;  /**< First block of the next pass (retail's tex_block after the added map). */
     int             block_count = 0; /**< Blocks entered by finished passes (retail's add_block_num). */
     mgCEnterIMGInfo info{};          /**< Shared by one pass's textures, as in LoadData. */
+    PcpLoad         pack;            /**< Model pack being built a model at a time, when pack.list is set. */
+    double          pack_ms = 0.0;   /**< Time spent on the current pack so far. */
+    double          longest_model_ms = 0.0;
+    std::string     longest_model;
     int             frames = 0;
     int             pieces = 0;
     double          longest_frame_ms = 0.0;
@@ -475,8 +479,44 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
         }
         const SCN_LOADMAP_INFO2::MapFiles &files = info.files[state.pass == 0 ? 1 : 0];
         const auto                         piece_start = std::chrono::steady_clock::now();
-        const int had = map->LoadDataItem(files.mpk_data, files.ipk_data, state.phase, state.index, &state.block,
-                                          &state.info, info.stack);
+
+        // Model packs build one model per piece: a section's main pack can hold most of its 40 or so models.
+        if (state.phase == 1 && state.pack.list != nullptr) {
+            const bool pack_done = state.pack.list->StepPCPFile(state.pack);
+            const double model_ms = SliceMs(std::chrono::steady_clock::now() - piece_start);
+            state.pack_ms += model_ms;
+            if (model_ms > state.longest_model_ms) {
+                state.longest_model_ms = model_ms;
+                state.longest_model = state.pack.last_model;
+            }
+            ++state.pieces;
+            built_one = true;
+            if (pack_done) {
+                if (state.pack_ms > state.longest_piece_ms) {
+                    state.longest_piece_ms = state.pack_ms;
+                    char *name = map->map_info.GetPCPName(state.index);
+                    state.longest_piece = std::string("models ") + (name != nullptr ? name : "?");
+                }
+                state.pack = PcpLoad{};
+                state.pack_ms = 0.0;
+                ++state.index;
+            }
+            continue;
+        }
+        if (state.phase == 1) {
+            const int had_pack = map->BeginDataPack(files.mpk_data, state.index, state.pack, info.stack);
+            if (had_pack != 0) {
+                state.pack_ms = SliceMs(std::chrono::steady_clock::now() - piece_start);
+                if (state.pack.list == nullptr) {
+                    ++state.index;
+                }
+                built_one = true;
+                continue;
+            }
+        }
+        const int had = state.phase == 1 ? 0
+                                         : map->LoadDataItem(files.mpk_data, files.ipk_data, state.phase, state.index,
+                                                             &state.block, &state.info, info.stack);
         if (had == 0) {
             if (state.phase == 0) {
                 state.phase = 1;
@@ -512,9 +552,11 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
     info.tex_block_num = state.block_count;
     state.active = false;
     const std::string label(dc2::text::View(info.name));
-    CT_LOG_INFO(Town, "section build: {} built {} pieces over {} frames in {:.0f} ms; longest frame {:.0f} ms, longest piece {} ({:.0f} ms)",
+    CT_LOG_INFO(Town, "section build: {} built {} pieces over {} frames in {:.0f} ms; longest frame {:.0f} ms, "
+                      "longest pack or texture {} ({:.0f} ms in all), slowest model {} ({:.0f} ms)",
                 label, state.pieces, state.frames, SliceMs(std::chrono::steady_clock::now() - state.started),
-                state.longest_frame_ms, state.longest_piece.empty() ? "none" : state.longest_piece, state.longest_piece_ms);
+                state.longest_frame_ms, state.longest_piece.empty() ? "none" : state.longest_piece, state.longest_piece_ms,
+                state.longest_model.empty() ? "none" : state.longest_model, state.longest_model_ms);
     dc2::diag::Notef("section", "built {} over {} frames, longest frame {:.0f} ms", label, state.frames, state.longest_frame_ms);
     return true;
 }

@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -183,6 +184,19 @@ public:
 
 STATIC_ASSERT(sizeof(CMdsInfo) == 0x20);
 
+class CMdsList;
+
+/**
+ *
+ * Port: a model pack being loaded a model at a time (CMdsList::BeginPCPFile and StepPCPFile).
+ *
+ */
+struct PcpLoad {
+    CMdsList             *list = nullptr;   /**< List being filled, or null when none is loading. */
+    std::shared_ptr<void> detail;           /**< The pack's parsed model list and progress, private to mdslist.cpp. */
+    std::string           last_model;       /**< Name of the model StepPCPFile built last, for diagnostics. */
+};
+
 /**
  *
  * The entries of one loaded PCP pack file, found by name.
@@ -235,6 +249,16 @@ public:
      * @size 0x1C8
      */
     void LoadPCPFile(char *name, unsigned int *pack, mgCMemory *memory, int type);
+
+    /**
+     *
+     * Port: LoadPCPFile in steps, so a streamed section builds a few models per frame. BeginPCPFile does everything
+     * before the first model and returns false when LoadPCPFile would have stopped there; StepPCPFile builds the next
+     * model and returns true once the pack is done.
+     *
+     */
+    bool BeginPCPFile(char *name, unsigned int *pack, mgCMemory *memory, int type, PcpLoad &load);
+    bool StepPCPFile(PcpLoad &load);
 };
 
 STATIC_ASSERT(sizeof(CMdsList) == 0x10);
@@ -322,6 +346,13 @@ public:
      * @size 0x108
      */
     int LoadPCPFile(char *name, unsigned int *pack, mgCMemory *memory, int type);
+    /**
+     *
+     * Port: picks the slot LoadPCPFile would and begins loading the pack there a model at a time; returns false
+     * when LoadPCPFile would load nothing.
+     *
+     */
+    bool BeginPCPFile(char *name, unsigned int *pack, mgCMemory *memory, int type, PcpLoad &load);
 
     /**
      *
