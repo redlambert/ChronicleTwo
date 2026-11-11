@@ -37,6 +37,23 @@ void Notef(std::string_view category, std::format_string<Args...> format, Args &
 void Dump(std::string_view reason);
 
 /**
+ * Where one game frame's time went on the main thread, measured in mgEndFrame.
+ */
+struct FrameParts {
+    double logic_ms = 0.0;  // game update, from the end of the last wait to mgEndFrame
+    double lease_ms = 0.0;  // waiting for the render lease (the render thread finishing its frame)
+    double locked_ms = 0.0; // device work under the lease: uploads, recording close, readbacks, publish
+    double wait_ms = 0.0;   // idle wait for the next tick boundary
+    int    ticks = 0;       // 60 Hz ticks the frame took, wait included
+    int    frames = 0;      // ticks the game asked for (2 at 30 game frames a second)
+};
+
+/**
+ * Hands the frame watch the parts of the game frame that just ended. Main thread only.
+ */
+void NoteFrameParts(const FrameParts &parts);
+
+/**
  * Advances the frame watch by one main-loop tick. Area names the place the player is in, such as
  * "town m01" or "dungeon 0 d01b01"; a change of area writes the finished area's summary.
  */

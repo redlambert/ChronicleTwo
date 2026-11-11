@@ -16,6 +16,7 @@
 #include "gfx/gfx.hpp"
 #include "gfx/profile.hpp"
 #include "log/log.hpp"
+#include "present.hpp"
 
 namespace dc2::diag {
 namespace {
@@ -99,11 +100,47 @@ struct AreaStats {
     gfx::FrameTimings::Span       tick_cpu;    // render thread's CPU work for tick frames
     gfx::FrameTimings::Span       blend_cpu;   // render thread's CPU work for display frames
     gfx::FrameTimings::Span       fence_wait;  // render thread waiting for the graphics chip
+    gfx::FrameTimings::Span       blend_prep;  // render thread preparing in-between frames (matching, interpolation)
+    std::array<uint64_t, 4>       intervals{}; // display present gaps: on time, 1 late, 2 late, worse
     std::map<std::string, PassTotal> passes;
     std::array<ZoneTotal, gfx::profile::kMaxSites> zones{};
+    // Game-thread parts of each play frame (FrameParts), and how the display kept up.
+    gfx::FrameTimings::Span       logic;
+    gfx::FrameTimings::Span       lease;
+    gfx::FrameTimings::Span       locked;
+    gfx::FrameTimings::Span       draws;
+    uint64_t                      game_late = 0;     // game frames that took more ticks than asked
+    uint64_t                      display_short = 0; // game frames with fewer presents than ticks
+    std::vector<std::pair<double, std::string>> worst; // slowest busy frames, with their detail
 };
 
+/**
+ * One 5-second slice of play, for the timeline lines.
+ */
+struct WindowStats {
+    Clock::time_point start{};
+    uint64_t          frames = 0;
+    uint64_t          ticks = 0;
+    uint64_t          presents = 0;
+    std::array<uint64_t, 4> intervals{};
+    uint64_t          game_late = 0;
+    uint64_t          display_short = 0;
+    double            busy_max = 0.0;
+    double            lease_total = 0.0;
+    double            lease_max = 0.0;
+    double            logic_total = 0.0;
+    double            logic_max = 0.0;
+    double            draws_total = 0.0;
+};
+
+constexpr std::size_t kWorstFrames = 6;
+
 AreaStats                                       g_area;
+WindowStats                                     g_window;
+FrameParts                                      g_parts;
+bool                                            g_parts_fresh = false;
+uint64_t                                        g_presented_last = 0;
+std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
 bool                                            g_started = false;
 Clock::time_point                               g_last_tick{};
 std::array<uint64_t, gfx::profile::kMaxSites>   g_zone_game_last{};
@@ -129,6 +166,11 @@ void TakeGpu() {
     AddSpan(g_area.tick_cpu, timings.canonical_cpu);
     AddSpan(g_area.blend_cpu, timings.display_cpu);
     AddSpan(g_area.fence_wait, timings.fence_wait);
+    AddSpan(g_area.blend_prep, timings.display_prepare_cpu);
+    for (std::size_t i = 0; i < 4; ++i) {
+        g_area.intervals[i] += timings.interval_buckets[i];
+        g_window.intervals[i] += timings.interval_buckets[i];
+    }
     for (const auto &scope : timings.scopes) {
         auto &pass = g_area.passes[scope.name];
         pass.ms += scope.span.total_ms;
@@ -151,6 +193,7 @@ void SampleZones() {
         g_zone_game_last[slot] = game;
         g_zone_other_last[slot] = other;
         g_zone_frame[slot] = game_ms;
+        g_zone_other_frame[slot] = other_ms;
         g_area.zones[slot].game_ms += game_ms;
         g_area.zones[slot].other_ms += other_ms;
     }
@@ -164,20 +207,63 @@ const char *ZoneName(std::size_t slot) {
 /**
  * Names the timing points that took longest in one tick, for a slow-frame line.
  */
-std::string TopFrameZones(int how_many) {
+std::string TopZonesOf(const std::array<double, gfx::profile::kMaxSites> &frame, int how_many, double min_ms,
+                       bool tenths) {
     const int count = std::min(gfx::profile::site_count.load(std::memory_order_relaxed), gfx::profile::kMaxSites);
     std::vector<std::size_t> order;
     for (int index = 0; index < count; ++index) {
-        if (g_zone_frame[static_cast<std::size_t>(index)] >= 1.0) {
+        if (frame[static_cast<std::size_t>(index)] >= min_ms) {
             order.push_back(static_cast<std::size_t>(index));
         }
     }
-    std::ranges::sort(order, [](std::size_t a, std::size_t b) { return g_zone_frame[a] > g_zone_frame[b]; });
+    std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return frame[a] > frame[b]; });
     std::string out;
     for (std::size_t i = 0; i < order.size() && i < static_cast<std::size_t>(how_many); ++i) {
-        out += std::format("{}{} {:.0f} ms", out.empty() ? "" : ", ", ZoneName(order[i]), g_zone_frame[order[i]]);
+        out += out.empty() ? "" : ", ";
+        out += ZoneName(order[i]);
+        out += tenths ? std::format(" {:.1f}", frame[order[i]]) : std::format(" {:.0f} ms", frame[order[i]]);
     }
-    return out.empty() ? std::string("no timed point over 1 ms") : out;
+    return out.empty() ? std::format("none over {:g} ms", min_ms) : out;
+}
+
+std::string TopFrameZones(int how_many) {
+    return TopZonesOf(g_zone_frame, how_many, 1.0, false);
+}
+
+/**
+ * Keeps a slow frame's detail if it is among the area's slowest, slowest first.
+ */
+void KeepWorst(double busy_ms, std::string detail) {
+    auto &worst = g_area.worst;
+    if (worst.size() == kWorstFrames && busy_ms <= worst.back().first) {
+        return;
+    }
+    worst.emplace_back(busy_ms, std::move(detail));
+    std::ranges::sort(worst, [](const auto &a, const auto &b) { return a.first > b.first; });
+    if (worst.size() > kWorstFrames) {
+        worst.pop_back();
+    }
+}
+
+/**
+ * Writes one timeline line for the 5 seconds just ended, then starts the next slice.
+ */
+void LogWindow(Clock::time_point now) {
+    if (g_window.frames >= 30) {
+        const double frames = static_cast<double>(g_window.frames);
+        const double seconds = Ms(now - g_window.start) / 1000.0;
+        CT_LOG_INFO(Main,
+                    "diag window '{}' +{:.0f} s: {:.1f} game fps, {:.1f} display fps; late game frames {}, short "
+                    "display frames {}; presents on time/1/2/3+ late {}/{}/{}/{}; game thread per frame: logic {:.1f} "
+                    "(max {:.1f}), lease wait {:.1f} (max {:.1f}), busiest frame {:.1f} ms; {:.0f} draws",
+                    g_area.name, Ms(now - g_area.start) / 1000.0, frames / seconds,
+                    static_cast<double>(g_window.presents) / seconds, g_window.game_late, g_window.display_short,
+                    g_window.intervals[0], g_window.intervals[1], g_window.intervals[2], g_window.intervals[3],
+                    g_window.logic_total / frames, g_window.logic_max, g_window.lease_total / frames,
+                    g_window.lease_max, g_window.busy_max, g_window.draws_total / frames);
+    }
+    g_window = WindowStats{};
+    g_window.start = now;
 }
 
 /**
@@ -254,12 +340,28 @@ void LogArea(bool is_final) {
                 g_area.blend_cpu.Average(), g_area.fence_wait.Average(), g_area.fence_wait.max_ms);
     CT_LOG_INFO(Main, "diag area time '{}' (ms per frame): game thread: {}; other threads: {}; chip passes: {}",
                 g_area.name, TopAreaZones(true, 6), TopAreaZones(false, 4), TopPasses(5));
+    CT_LOG_INFO(Main,
+                "diag area parts '{}' (ms per game frame, average/worst): logic {:.1f}/{:.1f}, lease wait {:.1f}/{:.1f}, "
+                "under lease {:.1f}/{:.1f}; draws {:.0f}/{:.0f}; late game frames {} ({:.1f}%), short display frames {} "
+                "({:.1f}%); render thread in-between frame {:.1f}/{:.1f}, of which prep {:.1f}/{:.1f}, tick frame "
+                "{:.1f}/{:.1f}; presents on time/1/2/3+ late {}/{}/{}/{}",
+                g_area.name, g_area.logic.Average(), g_area.logic.max_ms, g_area.lease.Average(), g_area.lease.max_ms,
+                g_area.locked.Average(), g_area.locked.max_ms, g_area.draws.Average(), g_area.draws.max_ms,
+                g_area.game_late, Percent(g_area.game_late, g_area.frames), g_area.display_short,
+                Percent(g_area.display_short, g_area.frames), g_area.blend_cpu.Average(), g_area.blend_cpu.max_ms,
+                g_area.blend_prep.Average(), g_area.blend_prep.max_ms, g_area.tick_cpu.Average(), g_area.tick_cpu.max_ms,
+                g_area.intervals[0], g_area.intervals[1], g_area.intervals[2], g_area.intervals[3]);
+    for (std::size_t i = 0; i < g_area.worst.size(); ++i) {
+        CT_LOG_INFO(Main, "diag area worst '{}' #{}: {}", g_area.name, i + 1, g_area.worst[i].second);
+    }
 }
 
 void StartArea(std::string_view name, Clock::time_point now) {
     g_area = AreaStats{};
     g_area.name = std::string(name);
     g_area.start = now;
+    g_window = WindowStats{};
+    g_window.start = now;
 }
 
 /**
@@ -286,7 +388,9 @@ void StartWatch(Clock::time_point now) {
         g_zone_game_last[slot] = gfx::profile::sites[slot].game_ns.load(std::memory_order_relaxed);
         g_zone_other_last[slot] = gfx::profile::sites[slot].other_ns.load(std::memory_order_relaxed);
     }
-    CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark)");
+    g_presented_last = PresentGetStats().presented;
+    CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
+                      "frame parts v1: lease wait, logic, in-between frame cost, 5 s timeline, worst frames named");
 }
 
 } // namespace
@@ -324,6 +428,11 @@ void Dump(std::string_view reason) {
     LogFlush();
 }
 
+void NoteFrameParts(const FrameParts &parts) {
+    g_parts = parts;
+    g_parts_fresh = true;
+}
+
 void Tick(int loop_no, std::string_view area, bool mark_held) {
     const Clock::time_point now = Clock::now();
     if (!g_started) {
@@ -350,6 +459,42 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
                         zones);
         }
     } else {
+        const uint64_t presented = PresentGetStats().presented;
+        const uint64_t presents = presented - g_presented_last;
+        g_presented_last = presented;
+        if (g_parts_fresh) {
+            const FrameParts &p = g_parts;
+            const double      busy = p.logic_ms + p.lease_ms + p.locked_ms;
+            const double      draws = static_cast<double>(PresentGetStats().last_draws);
+            const bool        late = p.frames > 0 && p.ticks > p.frames;
+            const bool        short_display = p.ticks > 0 && presents < static_cast<uint64_t>(p.ticks);
+            g_area.logic.Add(p.logic_ms);
+            g_area.lease.Add(p.lease_ms);
+            g_area.locked.Add(p.locked_ms);
+            g_area.draws.Add(draws);
+            g_area.game_late += late ? 1u : 0u;
+            g_area.display_short += short_display ? 1u : 0u;
+            ++g_window.frames;
+            g_window.ticks += static_cast<uint64_t>(std::max(p.ticks, 0));
+            g_window.presents += presents;
+            g_window.game_late += late ? 1u : 0u;
+            g_window.display_short += short_display ? 1u : 0u;
+            g_window.busy_max = std::max(g_window.busy_max, busy);
+            g_window.lease_total += p.lease_ms;
+            g_window.lease_max = std::max(g_window.lease_max, p.lease_ms);
+            g_window.logic_total += p.logic_ms;
+            g_window.logic_max = std::max(g_window.logic_max, p.logic_ms);
+            g_window.draws_total += draws;
+            if (late || short_display || busy > 25.0) {
+                KeepWorst(busy, std::format("+{:.1f} s, {:.1f} ms busy = logic {:.1f} + lease wait {:.1f} + under lease "
+                                            "{:.1f}; {} ticks for {}, {} presents, {:.0f} draws; game thread: {}; "
+                                            "render thread: {}",
+                                            Ms(now - g_area.start) / 1000.0, busy, p.logic_ms, p.lease_ms, p.locked_ms,
+                                            p.ticks, p.frames, presents, draws, TopZonesOf(g_zone_frame, 5, 0.5, true),
+                                            TopZonesOf(g_zone_other_frame, 5, 0.5, true)));
+            }
+            g_parts_fresh = false;
+        }
         ++g_area.frames;
         g_area.total_ms += frame_ms;
         g_area.worst_ms = std::max(g_area.worst_ms, frame_ms);
@@ -370,6 +515,7 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     if (now - g_last_gpu_take >= std::chrono::seconds(5)) {
         g_last_gpu_take = now;
         TakeGpu();
+        LogWindow(now);
     }
 
     if (area != g_area.name) {

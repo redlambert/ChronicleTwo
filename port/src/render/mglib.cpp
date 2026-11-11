@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "crash/crash.hpp"
+#include "diag/recorder.hpp"
 #include "dng_main.hpp"
 #include "exitcodes.hpp"
 #include "gfx/gfx.hpp"
@@ -2242,10 +2243,12 @@ void mgEndFrame(mgCDrawManager *manager) {
     bool       queued[4] = {};
     // The tick's canonical render and publication, when the render thread takes them after the lease.
     std::function<void()> queued_render;
+    std::chrono::steady_clock::time_point lease_got;
 
     {
         // The tick's device work runs under the lease; an Async render thread draws no display frame until it ends.
         gfx::RenderLease lease;
+        lease_got = std::chrono::steady_clock::now();
         bool             tick_rendered = false;
         bool             canonical_endpoint_allowed = true;
         mgVisualPortFlushUploads();
@@ -2337,6 +2340,7 @@ void mgEndFrame(mgCDrawManager *manager) {
             PresentPublishTick(old_vcount, mgFrameRate, canonical_endpoint_allowed);
         }
     }
+    const auto lease_end = std::chrono::steady_clock::now();
     if (queued_render) {
         gfx::RunOnRenderThreadAsync(std::move(queued_render));
     }
@@ -2376,13 +2380,26 @@ void mgEndFrame(mgCDrawManager *manager) {
         std::exit(status);
     }
 
+    const auto busy_end = std::chrono::steady_clock::now();
     if (GamePerfEnabled()) {
-        const auto busy_end = std::chrono::steady_clock::now();
         GamePerfTickTimes(std::chrono::duration<double, std::milli>(update_end - tick_start).count(),
                           std::chrono::duration<double, std::milli>(busy_end - tick_start).count());
     }
     PresentWaitFrame(old_vcount, mgFrameRate);
-    tick_start = std::chrono::steady_clock::now();
+    const auto wait_end = std::chrono::steady_clock::now();
+    {
+        // Frame watch: where this game frame's main-thread time went, and how many ticks it took.
+        using Ms = std::chrono::duration<double, std::milli>;
+        dc2::diag::FrameParts parts;
+        parts.logic_ms = Ms(update_end - tick_start).count();
+        parts.lease_ms = Ms(lease_got - update_end).count();
+        parts.locked_ms = Ms(lease_end - lease_got).count();
+        parts.wait_ms = Ms(wait_end - busy_end).count();
+        parts.ticks = mgGetVSyncCount() - old_vcount;
+        parts.frames = mgFrameRate;
+        dc2::diag::NoteFrameParts(parts);
+    }
+    tick_start = wait_end;
     old_vcount = mgGetVSyncCount();
     PresentTickEnd();
     mgNowFrameRate = dc2::timing::FrameFields();
