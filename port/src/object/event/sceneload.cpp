@@ -4,8 +4,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <filesystem>
 #include <memory>
 #include <span>
+#include <string>
+#include <utility>
 
 #include "character.hpp"
 #include "dataread.hpp"
@@ -17,7 +21,13 @@
 #include "scene.hpp"
 #include "sceneload.hpp"
 #include "scenesnd.hpp"
+#include "asset_directory.hpp"
+#include "log/log.hpp"
+#include "platform/datapacks.hpp"
+#include "platform/section_prefetch.hpp"
+#include "platform/texture_catalog.hpp"
 #include "text/bounded.hpp"
+#include "texture_source.hpp"
 
 namespace dc2::scene {
 /**
@@ -336,6 +346,75 @@ CMap::CMap() {
     Initialize();
 }
 
+namespace {
+
+/**
+ *
+ * Lists what a streamed map section's data step will read (its map parts' glTF models and its texture pictures)
+ * and hands it to the section prefetch worker. The names come from the map description, which the step before
+ * has just read; the packs are already in memory, so collecting costs no reads the data step would not make.
+ *
+ */
+void StartSectionPrefetch(CMap *map, const SCN_LOADMAP_INFO2 &info) {
+    if (map == nullptr) {
+        return;
+    }
+    section_prefetch::Job job;
+    job.label = std::string(dc2::text::View(info.name));
+    try {
+        for (int index = 0;; ++index) {
+            char *name = map->map_info.GetImgName(index);
+            if (name == nullptr) {
+                break;
+            }
+            for (const auto &files : info.files) {
+                if (files.enable == 0 || files.ipk_data == nullptr) {
+                    continue;
+                }
+                const u_int *file = AssetDirectoryRead(files.ipk_data, name, nullptr);
+                if (file == nullptr) {
+                    continue;
+                }
+                if (const auto source_name = TextureSourceLookup(file)) {
+                    if (const auto *source = texture_catalog::Find(*source_name)) {
+                        job.textures.insert(job.textures.end(), source->entries.begin(), source->entries.end());
+                    }
+                }
+                break;
+            }
+        }
+        for (int index = 0;; ++index) {
+            char *name = map->map_info.GetPCPName(index);
+            if (name == nullptr) {
+                break;
+            }
+            for (const auto &files : info.files) {
+                if (files.enable == 0 || files.mpk_data == nullptr) {
+                    continue;
+                }
+                const u_int *file = AssetDirectoryRead(files.mpk_data, name, nullptr);
+                if (file == nullptr) {
+                    continue;
+                }
+                if (const auto parent = AssetDirectoryPath(file)) {
+                    for (const auto &member : datapacks::DirectoryMembers(*parent)) {
+                        if (member.extension() == ".gltf") {
+                            job.models.push_back(std::filesystem::path(*parent) / member.filename());
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    } catch (const std::exception &error) {
+        CT_LOG_INFO_ONCE(Town, "section prefetch: could not list {}'s files ({}); it loads as before", job.label, error.what());
+        return;
+    }
+    section_prefetch::Start(std::move(job));
+}
+
+} // namespace
+
 int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
     int step = {};
     int result = {};
@@ -350,10 +429,21 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
 
     if (bg_load_info.data_ready != 0) {
         step = bg_load_step - 1;
+
+        // The data step builds the section's models and textures; it waits a few frames for the prefetch worker so
+        // it finds them already read instead of reading the SD card in one long frame.
+        if (step == SCN_LOADMAP_STEP_DATA && section_prefetch::ShouldWait()) {
+            return 0;
+        }
+
         result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
 
         if (result < 0) {
             return 0;
+        }
+
+        if (step == SCN_LOADMAP_STEP_MAP_INFO) {
+            StartSectionPrefetch(GetMap(bg_load_info.map_no), bg_load_info);
         }
 
         if (result == step) {

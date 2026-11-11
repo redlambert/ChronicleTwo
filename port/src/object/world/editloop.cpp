@@ -30,6 +30,7 @@
 #include "log/game_output.hpp"
 #include "diag/recorder.hpp"
 #include "log/log.hpp"
+#include "platform/section_prefetch.hpp"
 #include "profile.hpp"
 #include "main.hpp"
 #include "mainloop.hpp"
@@ -1365,6 +1366,18 @@ int EditLoop() {
                 dc2::diag::Notef("section", "town section {} starts loading", next_sub_map);
                 TownSectionLoad.step_max_ms = 0.0;
                 TownSectionLoad.steps = 0;
+                {
+                    // The section's villagers join its map parts in the prefetch, which starts once the map's
+                    // description is read.
+                    int                 villager_ids[32];
+                    CVillagerPlaceInfo *villager_places[32];
+                    const int           villagers = MainScene->GetLoadVillagerList(next_sub_map, villager_ids, villager_places);
+                    for (int index = 0; index < villagers && index < 32; ++index) {
+                        if (const auto model = GetVillagerModelName(villager_ids[index])) {
+                            section_prefetch::QueueModel(*model);
+                        }
+                    }
+                }
                 LoadSubMap(MainScene, next_sub_map, 1);
                 const auto villager_start = TownSectionTimer::Clock::now();
                 TownSectionLoad.start_ms = TownSectionTimer::Ms(villager_start - TownSectionLoad.start);
@@ -1376,6 +1389,8 @@ int EditLoop() {
 
         break;
     }
+
+    section_prefetch::Report();
 
     if (SubMapLoadStep() != 0) {
         const auto held_start = TownSectionTimer::Clock::now();

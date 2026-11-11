@@ -198,6 +198,10 @@ void EnterModelTextures(const std::shared_ptr<Document> &source, std::optional<s
  * Parsed documents shared by the model and its associated motion resources.
  */
 std::unordered_map<std::string, std::shared_ptr<Document>> documents;
+/**
+ * Guards documents: the section prefetch worker reads documents into it while the game thread uses it.
+ */
+std::mutex documents_mutex;
 
 /**
  * Parsed gameplay sidecars (.game.json with any .character.json merged in), keyed by the files' stamps.
@@ -769,8 +773,11 @@ std::shared_ptr<Document> Read(const std::filesystem::path &relative, bool allow
             }
             const auto stamp = path.Display() + '|' + vfs::Stamp(path);
             const auto key = stamp + '|' + (standard_only ? std::string("standard") : sidecar_identity);
-            if (const auto found = documents.find(key); found != documents.end()) {
-                return found->second;
+            {
+                std::lock_guard lock(documents_mutex);
+                if (const auto found = documents.find(key); found != documents.end()) {
+                    return found->second;
+                }
             }
             std::vector<uint8_t> data;
             if (!datapacks::ReadFileBytes(path, data)) {
@@ -783,8 +790,9 @@ std::shared_ptr<Document> Read(const std::filesystem::path &relative, bool allow
             if (document->overlaid) {
                 document->source = stamp;
             }
-            documents.emplace(key, document);
-            return document;
+            // A document another thread finished first is the one kept, so every caller shares the same document.
+            std::lock_guard lock(documents_mutex);
+            return documents.try_emplace(key, document).first->second;
         } catch (const std::exception &exception) {
             error = exception.what();
         }
@@ -1815,7 +1823,10 @@ std::string PictureName(const texture_catalog::Entry &entry, const std::string &
 
 void Clear() {
     character_motion::Clear();
-    documents.clear();
+    {
+        std::lock_guard lock(documents_mutex);
+        documents.clear();
+    }
     {
         std::lock_guard lock(gameplay_cache_mutex);
         gameplay_cache.clear();
@@ -3845,6 +3856,15 @@ bool LoadCharacter(CCharacter2 &character, std::span<const std::byte> gltf, cons
     return Attempt(error, [&] {
         CharacterProfile(character, ReadBytes(gltf, game), profile, {}, options, false);
     });
+}
+
+bool Warm(const std::filesystem::path &gltf) {
+    try {
+        static_cast<void>(Read(gltf, true));
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool LoadSkin(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, std::string_view name, const CharacterLoadOptions &options, std::string &error) {

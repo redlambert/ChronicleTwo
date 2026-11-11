@@ -60,6 +60,12 @@ bool LoadCharacter(CCharacter2 &character, const std::filesystem::path &gltf, st
 bool LoadCharacter(CCharacter2 &character, std::span<const std::byte> gltf, const nlohmann::json &game, std::string_view profile,
                    const CharacterLoadOptions &options, std::string &error);
 /**
+ * Reads and parses a glTF and its gameplay sidecar into the shared document cache without building anything, so a
+ * later load finds it ready. Safe on a worker thread, never logs, and returns false when the model cannot be read.
+ */
+bool Warm(const std::filesystem::path &gltf);
+
+/**
  * Replaces character skin visuals using an actual glTF path and native profile.
  */
 bool LoadSkin(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile,
