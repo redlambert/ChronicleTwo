@@ -972,7 +972,7 @@ TownLayout ReadTown(const Json &value) {
 OrderedJson SpawnJson(const AutosaveSpawn &spawn) {
     return {
         {"map_no",     spawn.map_no    },
-        {"sub_map_no", spawn.sub_map_no},
+        {"section",    spawn.sub_map_no},
         {"position",   spawn.position  },
         {"rotation",   spawn.rotation  },
         {"camera_pos", spawn.camera_pos},
@@ -987,11 +987,12 @@ std::optional<AutosaveSpawn> ReadSpawn(const Json &value, u64 counter) {
         AutosaveSpawn spawn;
         spawn.counter = counter;
         spawn.map_no = Number<int>(object.At("map_no"));
-        if (value.contains("sub_map_no")) {
-            spawn.sub_map_no = Number<int>(object.At("sub_map_no"));
+        if (value.contains("section")) {
+            spawn.sub_map_no = Number<int>(object.At("section"));
         } else if (spawn.map_no == 10) {
-            // A Palm Brinks autosave from before sections were recorded may stand in a section that will not be
-            // loaded, where the player falls forever; the save starts at its usual entry point instead.
+            // A Palm Brinks autosave from before sections were recorded (including the first try, which wrote
+            // "sub_map_no" and could miss the section) may stand in a section that will not be loaded, where the player
+            // falls forever; the save starts at its usual entry point instead.
             return std::nullopt;
         }
         for (auto [name, vector] : {

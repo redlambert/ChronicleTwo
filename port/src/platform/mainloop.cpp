@@ -1500,9 +1500,13 @@ void AutosaveTown() {
         autosaved_map = map;
         AutosaveSpawn spawn;
         spawn.map_no = GetSaveData()->map_no;
-        // Port: Palm Brinks streams its sections (maps 11 to 14) while the player walks. A spawn inside one records
-        // it, so loading the autosave loads that section too instead of leaving the player above nothing.
-        spawn.sub_map_no = map > 0xA && map < 0xF ? map : -1;
+        // Port: Palm Brinks streams its sections (maps 11 to 14) while the player walks, keeping one loaded. The
+        // spawn records that section, so loading the autosave loads it too instead of leaving the player above nothing.
+        const int section = GetSubMapNo();
+        spawn.sub_map_no = spawn.map_no == 0xA && section > 0xA && section < 0xF ? section : -1;
+        if (spawn.map_no == 0xA) {
+            CT_LOG_INFO(Save, "autosave: Palm Brinks spot saved with section {}", spawn.sub_map_no);
+        }
         chara->GetPosition(spawn.position);
         chara->GetRotation(spawn.rotation);
         camera->GetPos(spawn.camera_pos);

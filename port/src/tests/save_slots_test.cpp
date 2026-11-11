@@ -764,7 +764,7 @@ TEST_F(SaveSlotTest, PalmBrinksAutosaveKeepsItsSectionAndDropsOldSpawns) {
     // A Palm Brinks spawn written before sections were recorded may stand over an unloaded section; it is dropped.
     const auto original = Bytes(SaveSlotAutosavePath());
     auto       json = nlohmann::json::parse(std::string(original.begin(), original.end()));
-    json["pc"]["spawn"].erase("sub_map_no");
+    json["pc"]["spawn"].erase("section");
     json.erase("checksum");
     WriteText(SaveSlotAutosavePath(), json.dump(2));
     ASSERT_EQ(SaveSlotRead(SaveSlotAutosavePath(), *document), SaveSlotState::Ready);
