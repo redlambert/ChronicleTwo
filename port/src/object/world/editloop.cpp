@@ -95,6 +95,9 @@ static CScene *MainScene;
 static int SubMapLoadBG;
 // Port: true while the town loop's own entry (loading a save, arriving from a dungeon or the title) jumps to its map.
 static bool EditMapStartingFromLoop;
+// Port: the section a loop-start jump holds back until the loop has set up the memory sections live in.
+static int EditMapLoopStartSection = -1;
+static int EditLoadSectionWithTown(int sub_map_no);
 // Port: 1 while a loaded section's villagers are still loading, one per frame.
 static int SubMapFinishPhase;
 static int SubMapVillagerFrames;
@@ -917,6 +920,13 @@ void EditInit(INIT_LOOP_ARG arg) {
                 MainCharaBuff.stack_size, MainCharaBuff.stack_used, data_size);
     SubDataBuff.stSetBorrowedBuffer(MainCharaBuff, std::span(MainCharaBuff.stGetTop(), static_cast<std::size_t>(data_size)));
     SubDataBuff.stReset();
+
+    if (EditMapLoopStartSection > 0) {
+        const int section = EditMapLoopStartSection;
+        EditMapLoopStartSection = -1;
+        EditLoadSectionWithTown(section);
+    }
+
     SetCurrentDir(nullptr);
     sceVu0FVECTOR position = {0.0f, 0.0f, 0.0f, 0.0f};
     player = MainScene->GetCharacter(MainScene->player_chara);
@@ -2398,6 +2408,21 @@ void editLoadSound(int map_no) {
     }
 }
 
+// Port: loads a Palm Brinks section with the town and turns it on, with its villagers and events.
+static int EditLoadSectionWithTown(int sub_map_no) {
+    const int loaded = LoadSubMap(MainScene, sub_map_no, 0);
+    CT_LOG_INFO(Town, "town load: section {} {} (section memory used {} of {} quadwords)", sub_map_no,
+                loaded != 0 ? "loaded" : "FAILED to load", SubDataBuff.stack_used, SubDataBuff.stack_size);
+
+    if (loaded != 0) {
+        MainScene->SetActive(SCENE_DATA_MAP, 1);
+        MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
+        EditMapInitEvent(sub_map_no, static_cast<CEditMap *>(MainScene->GetMap(1)));
+    }
+
+    return loaded;
+}
+
 int EditMapJump(int map_no) {
     int                file_size = {};
     int                sub_map_no = {};
@@ -2410,7 +2435,6 @@ int EditMapJump(int map_no) {
     CCameraControl    *camera = {};
     CameraCtrlParam   *param = {};
     CEditData         *edit_data = {};
-    int                loaded_sub = {};
     int                used_quads = {};
     int                used_kb = {};
 
@@ -2575,17 +2599,18 @@ int EditMapJump(int map_no) {
     NowLoadingBarStep();
 
     CT_LOG_INFO(Town, "town load: main map {} ready, section to load with it {}", MapNo, sub_map_no);
-    if (sub_map_no > 0) {
-        loaded_sub = LoadSubMap(MainScene, sub_map_no, 0);
-        CT_LOG_INFO(Town, "town load: section {} {}", sub_map_no, loaded_sub != 0 ? "loaded" : "FAILED to load");
+    EditMapLoopStartSection = -1;
+    if (sub_map_no > 0 && EditMapStartingFromLoop) {
+        // Port: the town loop's start resets the section memory (Sub Data) right after this jump, which wiped a
+        // section loaded here: its villagers (kept elsewhere) stayed, its ground and buildings were gone, and the
+        // player fell forever. The loop loads it once that memory is ready.
+        EditMapLoopStartSection = sub_map_no;
+        CT_LOG_INFO(Town, "town load: section {} waits until the town's start has set up its memory", sub_map_no);
         NowLoadingBarStep();
-
-        if (loaded_sub != 0) {
-            MainScene->SetActive(SCENE_DATA_MAP, 1);
-            MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
-            EditMapInitEvent(sub_map_no, static_cast<CEditMap *>(MainScene->GetMap(1)));
-        }
-
+        NowLoadingBarStep();
+    } else if (sub_map_no > 0) {
+        EditLoadSectionWithTown(sub_map_no);
+        NowLoadingBarStep();
         NowLoadingBarStep();
     } else {
         NowLoadingBarStep();
