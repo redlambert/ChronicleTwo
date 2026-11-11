@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "diag/recorder.hpp"
+#include "log/log.hpp"
 #include "gfx/gfx.hpp"
 #include "mg_drawprim.hpp"
 #include "mg_sprite.hpp"
@@ -304,12 +305,26 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
     const auto               frame_w = static_cast<uint32_t>(mgScreenWidth);
     const auto               frame_h = static_cast<uint32_t>(mgScreenHeight);
     const gfx::TextureHandle entry = mgPortCurrentTarget();
-    const gfx::TextureHandle first = gfx::NamedRenderTarget("lens flare a", frame_w, frame_h, true, true);
-    const gfx::TextureHandle second = gfx::NamedRenderTarget("lens flare b", frame_w, frame_h, true, true);
-    const gfx::TextureHandle mask = gfx::NamedRenderTarget("lens flare mask", frame_w, frame_h, true, false);
+    // Only the occlusion plate needs the full frame and the main depth. Everything after it works in the frame's
+    // top-left third, so it gets third-size targets: every pass then loads and stores a ninth of the pixels, and
+    // linear samples at the third's right and bottom edges read the cleared margin instead of the full-size plate
+    // beside it (which showed as a stripe down the screen's right edge).
+    const auto               third_w = static_cast<uint32_t>(mgScreenWidth / 3 + 2);
+    const auto               third_h = static_cast<uint32_t>(mgScreenHeight / 3 + 2);
+    const gfx::TextureHandle plate_target = gfx::NamedRenderTarget("lens flare a", frame_w, frame_h, true, true);
+    const gfx::TextureHandle first = gfx::NamedRenderTarget("lens flare third a", third_w, third_h, true, false);
+    const gfx::TextureHandle second = gfx::NamedRenderTarget("lens flare third b", third_w, third_h, true, false);
+    const gfx::TextureHandle mask = gfx::NamedRenderTarget("lens flare third mask", third_w, third_h, true, false);
 
-    if (first == gfx::kNullTexture || second == gfx::kNullTexture || mask == gfx::kNullTexture) {
+    if (plate_target == gfx::kNullTexture || first == gfx::kNullTexture || second == gfx::kNullTexture ||
+        mask == gfx::kNullTexture) {
         return;
+    }
+
+    static bool logged_third_targets = false;
+    if (!logged_third_targets) {
+        logged_third_targets = true;
+        CT_LOG_INFO(Gfx, "lens flare: third-size work targets ({}x{}), fix v1", third_w, third_h);
     }
 
     const mgPortExtent extent = mgPortVisibleExtent();
@@ -341,7 +356,7 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
     const int              centre_y = sun.y / 3;
 
     // Occlusion plate: grey where the sun's depth passes the scene's, black where geometry is nearer.
-    gfx::SetRenderTarget(first);
+    gfx::SetRenderTarget(plate_target);
     gfx::Clear(true, black_opaque.data(), false, 0.0f, &whole);
     std::vector<gfx::Vertex2D> plate;
     AppendQuad(plate, extent.left, extent.top, extent.right, extent.bottom, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -349,13 +364,15 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
     mgPortDraw2D(gfx::Primitive::Quads, plate, gfx::TextureBinding{}, FlarePass(gfx::DepthTest::GEqual));
 
     gfx::SetRenderTarget(second);
+    gfx::Clear(true, black_opaque.data(), false, 0.0f, nullptr);
     std::vector<gfx::Vertex2D> downsample;
     AppendQuad(downsample, 0.0f, 0.0f, downsample_right, downsample_bottom, 0.0f, 0.0f, downsample_u, downsample_v,
                identity);
-    mgPortDraw2D(gfx::Primitive::Quads, downsample, FlareSample(first, source.first_alpha, gfx::Filter::Linear),
+    mgPortDraw2D(gfx::Primitive::Quads, downsample, FlareSample(plate_target, source.first_alpha, gfx::Filter::Linear),
                  FlarePass(gfx::DepthTest::Always));
 
     gfx::SetRenderTarget(first);
+    gfx::Clear(true, black_opaque.data(), false, 0.0f, nullptr);
     std::vector<gfx::Vertex2D> seed;
     AppendQuad(seed, 0.0f, 0.0f, small_w, small_h + 1.0f, 0.0f, 0.0f, small_w + 1.0f, small_h + 1.0f, identity);
     mgPortDraw2D(gfx::Primitive::Quads, seed, FlareSample(second, source.second_alpha, gfx::Filter::Linear),
