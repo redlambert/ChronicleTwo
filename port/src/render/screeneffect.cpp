@@ -296,6 +296,9 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
         return;
     }
     dc2::diag::NoteLensFlare();
+    if (!dc2::diag::LensFlareEnabled()) {
+        return;
+    }
 
     // Shares the main depth: the occlusion plate is tested against the scene exactly as on the GS.
     const auto               frame_w = static_cast<uint32_t>(mgScreenWidth);

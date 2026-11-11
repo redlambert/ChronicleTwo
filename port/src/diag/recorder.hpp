@@ -54,6 +54,16 @@ struct FrameParts {
 void NoteLensFlare();
 
 /**
+ * Whether the sun's lens flare should draw; the diagnostics switch turns it off for A/B runs.
+ */
+bool LensFlareEnabled();
+
+/**
+ * Flips the lens flare switch when Minus is pressed with L and R held. Main thread only, once per main-loop tick.
+ */
+void PollFlareSwitch(bool shoulders_held, bool minus_down);
+
+/**
  * Hands the frame watch the parts of the game frame that just ended. Main thread only.
  */
 void NoteFrameParts(const FrameParts &parts);

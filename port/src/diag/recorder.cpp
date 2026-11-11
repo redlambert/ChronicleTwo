@@ -134,6 +134,12 @@ struct WindowStats {
     uint64_t          flare_frames = 0;           // game frames that drew the sun's lens flare
     gfx::FrameTimings::Span blend_cpu;            // render thread per in-between frame
     gfx::FrameTimings::Span tick_cpu;             // render thread per tick frame
+    gfx::FrameTimings::Span tick_gpu;             // graphics chip per tick frame
+    gfx::FrameTimings::Span blend_gpu;            // graphics chip per in-between frame
+    gfx::FrameTimings::Span fence_wait;           // render thread waiting on the chip
+    gfx::FrameTimings::Span acquire;              // render thread getting a screen image
+    gfx::FrameTimings::Span queue_present;        // render thread handing an image to the screen
+    uint64_t          flare_off_frames = 0;       // game frames that would have drawn the flare with it switched off
     std::array<double, gfx::profile::kMaxSites> other{}; // render-thread time per timing point
 };
 
@@ -144,6 +150,8 @@ WindowStats                                     g_window;
 FrameParts                                      g_parts;
 bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
+bool                                            g_flare_enabled = true;
+bool                                            g_flare_minus_was_down = false;
 Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
 std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
@@ -175,6 +183,11 @@ void TakeGpu() {
     AddSpan(g_area.blend_prep, timings.display_prepare_cpu);
     AddSpan(g_window.blend_cpu, timings.display_cpu);
     AddSpan(g_window.tick_cpu, timings.canonical_cpu);
+    AddSpan(g_window.tick_gpu, timings.canonical_gpu);
+    AddSpan(g_window.blend_gpu, timings.display_gpu);
+    AddSpan(g_window.fence_wait, timings.fence_wait);
+    AddSpan(g_window.acquire, timings.acquire);
+    AddSpan(g_window.queue_present, timings.queue_present);
     for (std::size_t i = 0; i < 4; ++i) {
         g_area.intervals[i] += timings.interval_buckets[i];
         g_window.intervals[i] += timings.interval_buckets[i];
@@ -254,6 +267,20 @@ void KeepWorst(double busy_ms, std::string detail) {
 }
 
 /**
+ * Summed time of the timing point with this name, or 0 when it has not run.
+ */
+double SiteTotal(const std::array<double, gfx::profile::kMaxSites> &totals, std::string_view name) {
+    const int count = std::min(gfx::profile::site_count.load(std::memory_order_relaxed), gfx::profile::kMaxSites);
+    double    total = 0.0;
+    for (int index = 0; index < count; ++index) {
+        if (name == ZoneName(static_cast<std::size_t>(index))) {
+            total += totals[static_cast<std::size_t>(index)];
+        }
+    }
+    return total;
+}
+
+/**
  * The window's busiest render-thread timing points, as milliseconds per game frame.
  */
 std::string WindowRenderZones(double frames) {
@@ -284,6 +311,26 @@ void LogWindow(Clock::time_point now) {
                     g_window.lease_max, g_window.busy_max, g_window.draws_total / frames, g_window.flare_frames,
                     g_window.frames, g_window.tick_cpu.Average(), g_window.tick_cpu.max_ms, g_window.blend_cpu.Average(),
                     g_window.blend_cpu.max_ms, WindowRenderZones(frames));
+    }
+    if (g_window.frames >= 30) {
+        const double frames = static_cast<double>(g_window.frames);
+        // The renderer's present step also waits for the screen's refresh (Switch vsync gate) before it hands the
+        // image over; it has no timing point of its own, so it is the step's time less what is timed inside it.
+        const double present_step = SiteTotal(g_window.other, "Kazarov PresentImage") / frames;
+        const double queue_present = g_window.queue_present.total_ms / frames;
+        const double acquire = g_window.acquire.total_ms / frames;
+        CT_LOG_INFO(Main,
+                    "diag window detail '{}': sun flare {}{}; chip per tick frame {:.1f} (max {:.1f}), per in-between "
+                    "frame {:.1f} (max {:.1f}); render thread waiting on the chip {:.1f} ms per game frame (max {:.1f}); "
+                    "present step {:.1f} ms per game frame = handing over {:.1f} + rest {:.1f} (mostly waiting for the "
+                    "screen's refresh, with the device held); getting a screen image {:.1f} ms per game frame",
+                    g_area.name, g_flare_enabled ? "on" : "off",
+                    g_window.flare_off_frames > 0
+                        ? std::format(" (switched off in {} frames that would have drawn it)", g_window.flare_off_frames)
+                        : std::string(),
+                    g_window.tick_gpu.Average(), g_window.tick_gpu.max_ms, g_window.blend_gpu.Average(),
+                    g_window.blend_gpu.max_ms, g_window.fence_wait.total_ms / frames, g_window.fence_wait.max_ms,
+                    present_step, queue_present, std::max(present_step - queue_present, 0.0), acquire);
     }
     g_window = WindowStats{};
     g_window.start = now;
@@ -414,8 +461,8 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v3: lease wait, logic, in-between frame cost, 5 s timeline with render thread and sun flare, "
-                      "area report every 30 s, worst frames named, town sub-zones");
+                      "frame parts v4: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
+                      "wait, sun flare switch (L + R + Minus), area report every 30 s, worst frames named, town sub-zones");
 }
 
 } // namespace
@@ -455,6 +502,22 @@ void Dump(std::string_view reason) {
 
 void NoteLensFlare() {
     g_flare_this_frame = true;
+    if (!g_flare_enabled) {
+        ++g_window.flare_off_frames;
+    }
+}
+
+bool LensFlareEnabled() {
+    return g_flare_enabled;
+}
+
+void PollFlareSwitch(bool shoulders_held, bool minus_down) {
+    if (shoulders_held && minus_down && !g_flare_minus_was_down) {
+        g_flare_enabled = !g_flare_enabled;
+        CT_LOG_INFO(Main, "diag: sun flare switched {} (L + R + Minus)", g_flare_enabled ? "on" : "off");
+        Notef("flare", "switched {}", g_flare_enabled ? "on" : "off");
+    }
+    g_flare_minus_was_down = minus_down;
 }
 
 void NoteFrameParts(const FrameParts &parts) {
