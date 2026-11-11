@@ -49,6 +49,11 @@ struct FrameParts {
 };
 
 /**
+ * Marks that this game frame drew the sun's lens flare. Main thread only.
+ */
+void NoteLensFlare();
+
+/**
  * Hands the frame watch the parts of the game frame that just ended. Main thread only.
  */
 void NoteFrameParts(const FrameParts &parts);

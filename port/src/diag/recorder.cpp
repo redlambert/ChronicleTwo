@@ -131,6 +131,10 @@ struct WindowStats {
     double            logic_total = 0.0;
     double            logic_max = 0.0;
     double            draws_total = 0.0;
+    uint64_t          flare_frames = 0;           // game frames that drew the sun's lens flare
+    gfx::FrameTimings::Span blend_cpu;            // render thread per in-between frame
+    gfx::FrameTimings::Span tick_cpu;             // render thread per tick frame
+    std::array<double, gfx::profile::kMaxSites> other{}; // render-thread time per timing point
 };
 
 constexpr std::size_t kWorstFrames = 6;
@@ -139,6 +143,8 @@ AreaStats                                       g_area;
 WindowStats                                     g_window;
 FrameParts                                      g_parts;
 bool                                            g_parts_fresh = false;
+bool                                            g_flare_this_frame = false;
+Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
 std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
 bool                                            g_started = false;
@@ -167,6 +173,8 @@ void TakeGpu() {
     AddSpan(g_area.blend_cpu, timings.display_cpu);
     AddSpan(g_area.fence_wait, timings.fence_wait);
     AddSpan(g_area.blend_prep, timings.display_prepare_cpu);
+    AddSpan(g_window.blend_cpu, timings.display_cpu);
+    AddSpan(g_window.tick_cpu, timings.canonical_cpu);
     for (std::size_t i = 0; i < 4; ++i) {
         g_area.intervals[i] += timings.interval_buckets[i];
         g_window.intervals[i] += timings.interval_buckets[i];
@@ -246,6 +254,17 @@ void KeepWorst(double busy_ms, std::string detail) {
 }
 
 /**
+ * The window's busiest render-thread timing points, as milliseconds per game frame.
+ */
+std::string WindowRenderZones(double frames) {
+    std::array<double, gfx::profile::kMaxSites> per_frame{};
+    for (std::size_t i = 0; i < per_frame.size(); ++i) {
+        per_frame[i] = g_window.other[i] / frames;
+    }
+    return TopZonesOf(per_frame, 5, 0.5, true);
+}
+
+/**
  * Writes one timeline line for the 5 seconds just ended, then starts the next slice.
  */
 void LogWindow(Clock::time_point now) {
@@ -255,12 +274,16 @@ void LogWindow(Clock::time_point now) {
         CT_LOG_INFO(Main,
                     "diag window '{}' +{:.0f} s: {:.1f} game fps, {:.1f} display fps; late game frames {}, short "
                     "display frames {}; presents on time/1/2/3+ late {}/{}/{}/{}; game thread per frame: logic {:.1f} "
-                    "(max {:.1f}), lease wait {:.1f} (max {:.1f}), busiest frame {:.1f} ms; {:.0f} draws",
+                    "(max {:.1f}), lease wait {:.1f} (max {:.1f}), busiest frame {:.1f} ms; {:.0f} draws; sun flare in "
+                    "{} of {} frames; render thread per tick frame {:.1f} (max {:.1f}), per in-between frame {:.1f} "
+                    "(max {:.1f}); render thread ms per game frame: {}",
                     g_area.name, Ms(now - g_area.start) / 1000.0, frames / seconds,
                     static_cast<double>(g_window.presents) / seconds, g_window.game_late, g_window.display_short,
                     g_window.intervals[0], g_window.intervals[1], g_window.intervals[2], g_window.intervals[3],
                     g_window.logic_total / frames, g_window.logic_max, g_window.lease_total / frames,
-                    g_window.lease_max, g_window.busy_max, g_window.draws_total / frames);
+                    g_window.lease_max, g_window.busy_max, g_window.draws_total / frames, g_window.flare_frames,
+                    g_window.frames, g_window.tick_cpu.Average(), g_window.tick_cpu.max_ms, g_window.blend_cpu.Average(),
+                    g_window.blend_cpu.max_ms, WindowRenderZones(frames));
     }
     g_window = WindowStats{};
     g_window.start = now;
@@ -362,6 +385,7 @@ void StartArea(std::string_view name, Clock::time_point now) {
     g_area.start = now;
     g_window = WindowStats{};
     g_window.start = now;
+    g_last_area_report = now;
 }
 
 /**
@@ -390,7 +414,8 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v2: lease wait, logic, in-between frame cost, 5 s timeline, worst frames named, town sub-zones");
+                      "frame parts v3: lease wait, logic, in-between frame cost, 5 s timeline with render thread and sun flare, "
+                      "area report every 30 s, worst frames named, town sub-zones");
 }
 
 } // namespace
@@ -428,6 +453,10 @@ void Dump(std::string_view reason) {
     LogFlush();
 }
 
+void NoteLensFlare() {
+    g_flare_this_frame = true;
+}
+
 void NoteFrameParts(const FrameParts &parts) {
     g_parts = parts;
     g_parts_fresh = true;
@@ -445,6 +474,12 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     const double frame_ms = Ms(now - g_last_tick);
     g_last_tick = now;
     SampleZones();
+    // Read every tick, so presents made while the game sat in a pause or menu never land on one play frame.
+    const uint64_t presented = PresentGetStats().presented;
+    const uint64_t presents = presented - g_presented_last;
+    g_presented_last = presented;
+    const bool flare = g_flare_this_frame;
+    g_flare_this_frame = false;
 
     if (frame_ms >= kStall) {
         ++g_area.stalls;
@@ -459,9 +494,6 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
                         zones);
         }
     } else {
-        const uint64_t presented = PresentGetStats().presented;
-        const uint64_t presents = presented - g_presented_last;
-        g_presented_last = presented;
         if (g_parts_fresh) {
             const FrameParts &p = g_parts;
             const double      busy = p.logic_ms + p.lease_ms + p.locked_ms;
@@ -485,6 +517,10 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
             g_window.logic_total += p.logic_ms;
             g_window.logic_max = std::max(g_window.logic_max, p.logic_ms);
             g_window.draws_total += draws;
+            g_window.flare_frames += flare ? 1u : 0u;
+            for (std::size_t i = 0; i < g_window.other.size(); ++i) {
+                g_window.other[i] += g_zone_other_frame[i];
+            }
             if (late || short_display || busy > 25.0) {
                 KeepWorst(busy, std::format("+{:.1f} s, {:.1f} ms busy = logic {:.1f} + lease wait {:.1f} + under lease "
                                             "{:.1f}; {} ticks for {}, {} presents, {:.0f} draws; game thread: {}; "
@@ -516,6 +552,12 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
         g_last_gpu_take = now;
         TakeGpu();
         LogWindow(now);
+    }
+
+    // The area's full breakdown every 30 s as well, so a session that ends in an area still reports it.
+    if (now - g_last_area_report >= std::chrono::seconds(30) && area == g_area.name) {
+        g_last_area_report = now;
+        LogArea(false);
     }
 
     if (area != g_area.name) {
