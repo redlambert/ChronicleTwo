@@ -2200,6 +2200,25 @@ public:
      * @size 0x338
      */
     int LoadSubVillager(int map_no, int texb);
+    /**
+     *
+     * Port: starts loading a map's sub villagers without loading any; LoadSubVillagerStep loads them one per call.
+     * With defer_show they stay hidden until the last is loaded. Returns the number of villagers the map lists.
+     *
+     */
+    int BeginLoadSubVillager(int map_no, int texb, bool defer_show);
+    /**
+     *
+     * Port: loads the next sub villager of the load BeginLoadSubVillager started; returns true once all are loaded.
+     *
+     */
+    bool LoadSubVillagerStep();
+    /**
+     *
+     * Port: abandons a sub villager load in progress, keeping the villagers already loaded.
+     *
+     */
+    void CancelLoadSubVillager();
 
     /**
      *

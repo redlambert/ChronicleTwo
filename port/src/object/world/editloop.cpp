@@ -92,6 +92,10 @@ static CScene *MainScene;
  *
  */
 static int SubMapLoadBG;
+// Port: 1 while a loaded section's villagers are still loading, one per frame.
+static int SubMapFinishPhase;
+static int SubMapVillagerFrames;
+static double SubMapVillagerLongestMs;
 
 /**
  *
@@ -995,6 +999,10 @@ void EditExit() {
 void InitSubMapLoadStep() {
     SubMapLoadBG = 0;
     now_load_map_no = -1;
+    if (SubMapFinishPhase != 0 && MainScene != nullptr) {
+        MainScene->CancelLoadSubVillager();
+    }
+    SubMapFinishPhase = 0;
 }
 
 namespace {
@@ -1014,7 +1022,8 @@ struct TownSectionTimer {
     static double Ms(Clock::duration duration) { return std::chrono::duration<double, std::milli>(duration).count(); }
 };
 
-TownSectionTimer TownSectionLoad;
+TownSectionTimer                    TownSectionLoad;
+TownSectionTimer::Clock::time_point SubMapFinishStart{};
 } // namespace
 
 /**
@@ -1038,17 +1047,34 @@ int SubMapLoadStep() {
     }
     if (step_result != 0) {
         if (SubMapLoadBG != 0) {
-            const auto finish_start = TownSectionTimer::Clock::now();
-            SubMapLoadBG = 0;
-            {
-                CT_PROFILE_ZONE("Town section switch on");
-                MainScene->SetActive(SCENE_DATA_MAP, 1);
+            // Port: the section's villagers load one per frame (retail loaded them all in this one frame, about
+            // 300 ms on Switch), hidden until the last is in, and the section's events start after them as before.
+            if (SubMapFinishPhase == 0) {
+                SubMapFinishPhase = 1;
+                SubMapFinishStart = TownSectionTimer::Clock::now();
+                SubMapVillagerFrames = 0;
+                SubMapVillagerLongestMs = 0.0;
+                {
+                    CT_PROFILE_ZONE("Town section switch on");
+                    MainScene->SetActive(SCENE_DATA_MAP, 1);
+                }
+                MainScene->BeginLoadSubVillager(GetSubMapNo(), 0x5E, true);
             }
             {
                 CT_PROFILE_ZONE("Town section villagers");
-                MainScene->LoadSubVillager(GetSubMapNo(), 0x5E);
-                MainScene->PreLoadVillagerEnd();
+                const auto villager_start = TownSectionTimer::Clock::now();
+                const bool villagers_done = MainScene->LoadSubVillagerStep();
+                ++SubMapVillagerFrames;
+                SubMapVillagerLongestMs = std::max(SubMapVillagerLongestMs,
+                                                   TownSectionTimer::Ms(TownSectionTimer::Clock::now() - villager_start));
+                if (!villagers_done) {
+                    return 1;
+                }
             }
+            const auto finish_start = SubMapFinishStart;
+            SubMapFinishPhase = 0;
+            SubMapLoadBG = 0;
+            MainScene->PreLoadVillagerEnd();
             char *name = GetMapName(now_load_map_no, nullptr);
             scene = MainScene;
             {
@@ -1059,14 +1085,15 @@ int SubMapLoadStep() {
                 const auto now = TownSectionTimer::Clock::now();
                 CT_LOG_INFO(Town, "town section {} ({}) loaded in {:.0f} ms; player held waiting {:.0f} ms; "
                                   "start {:.0f} ms, villager preload {:.0f} ms, {} background steps (longest {:.0f} ms), "
-                                  "finish {:.0f} ms",
+                                  "finish {:.0f} ms (villagers over {} frames, longest {:.0f} ms)",
                             now_load_map_no, name != nullptr ? name : "?",
                             TownSectionTimer::Ms(now - TownSectionLoad.start), TownSectionLoad.held_ms,
                             TownSectionLoad.start_ms, TownSectionLoad.villager_ms, TownSectionLoad.steps,
-                            TownSectionLoad.step_max_ms, TownSectionTimer::Ms(now - finish_start));
-                dc2::diag::Notef("section", "town section {} loaded in {:.0f} ms (finish step {:.0f} ms)",
+                            TownSectionLoad.step_max_ms, TownSectionTimer::Ms(now - finish_start),
+                            SubMapVillagerFrames, SubMapVillagerLongestMs);
+                dc2::diag::Notef("section", "town section {} loaded in {:.0f} ms (villagers over {} frames, longest {:.0f} ms)",
                                  name != nullptr ? name : "?", TownSectionTimer::Ms(now - TownSectionLoad.start),
-                                 TownSectionTimer::Ms(now - finish_start));
+                                 SubMapVillagerFrames, SubMapVillagerLongestMs);
                 TownSectionLoad.section = -1;
             }
             now_load_map_no = -1;
@@ -1359,6 +1386,13 @@ int EditLoop() {
             std::memmove(CharaOldPos, position, sizeof(float) * 4);
 
             if (next_sub_map > 0) {
+                // A section whose villagers are still loading finishes first, so the new one starts clean.
+                if (SubMapFinishPhase != 0) {
+                    CT_LOG_INFO(Town, "town section: finishing section {} at once, section {} starts loading",
+                                now_load_map_no, next_sub_map);
+                    while (SubMapLoadStep() != 0) {
+                    }
+                }
                 now_load_map_no = next_sub_map;
                 TownSectionLoad.section = next_sub_map;
                 TownSectionLoad.start = TownSectionTimer::Clock::now();

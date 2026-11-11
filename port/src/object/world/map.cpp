@@ -2132,6 +2132,49 @@ void CMap::LoadData(unsigned int *pcp_pack, unsigned int *img_pack, int *tex_blo
     }
 }
 
+int CMap::LoadDataItem(unsigned int *pcp_pack, unsigned int *img_pack, int phase, int index, int *block,
+                       mgCEnterIMGInfo *info, mgCMemory *stack) {
+    if (mds_list_set == nullptr) {
+        return 0;
+    }
+
+    if (phase == 0) {
+        char *name = map_info.GetImgName(index);
+
+        if (name == nullptr) {
+            return 0;
+        }
+
+        unsigned int *file = AssetDirectoryRead(img_pack, name, nullptr);
+        dc2::log::PrintGame("%p %s\n", static_cast<void *>(file), name);
+
+        if (file != nullptr) {
+            mgCTextureManager *manager = &mgTexManager;
+            const int          first_block = *block;
+            *block += manager->EnterIMGFile(reinterpret_cast<u_char *>(file), *block, stack, info);
+            *block += 1;
+            manager->EndEnterTexture(first_block);
+            mds_list_set->LoadIMGFile(name, info, stack);
+        }
+
+        return 1;
+    }
+
+    char *pcp_name = map_info.GetPCPName(index);
+
+    if (pcp_name == nullptr) {
+        return 0;
+    }
+
+    unsigned int *file = AssetDirectoryRead(pcp_pack, pcp_name, nullptr);
+
+    if (file != nullptr) {
+        mds_list_set->LoadPCPFile(pcp_name, file, stack, map_info.all_scissor);
+    }
+
+    return 1;
+}
+
 int CheckFuncEvent(CFuncPoint *point, float *pos, int check_type, MapEventInfo *info, float *out_dist) {
     sceVu0FMATRIX matrix;
     sceVu0FVECTOR world_position;

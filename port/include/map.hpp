@@ -952,6 +952,15 @@ public:
      * @size 0x180
      */
     void LoadData(unsigned int *pcp_pack, unsigned int *img_pack, int *tex_block, mgCMemory *stack);
+    /**
+     *
+     * Port: loads one texture (phase 0) or one model pack (phase 1) of LoadData, the index-th of the map's names, so
+     * a streamed section can build a few per frame. block is the next texture block, advanced as LoadData would;
+     * info is shared by the textures of one pack, as in LoadData. Returns 0 when the phase has no index-th name.
+     *
+     */
+    int LoadDataItem(unsigned int *pcp_pack, unsigned int *img_pack, int phase, int index, int *block,
+                     mgCEnterIMGInfo *info, mgCMemory *stack);
 
     /**
      *

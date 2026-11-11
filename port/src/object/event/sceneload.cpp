@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -22,6 +24,7 @@
 #include "sceneload.hpp"
 #include "scenesnd.hpp"
 #include "asset_directory.hpp"
+#include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "platform/datapacks.hpp"
 #include "platform/section_prefetch.hpp"
@@ -413,6 +416,109 @@ void StartSectionPrefetch(CMap *map, const SCN_LOADMAP_INFO2 &info) {
     section_prefetch::Start(std::move(job));
 }
 
+/**
+ *
+ * Port: a streamed section's data step, spread over frames. Retail builds all of a section's textures and model
+ * packs in one call, which on Switch was one frame of 400 ms or more; this builds them in LoadData's order, a few
+ * per frame within a time budget, with the same texture block accounting. Only one background map loads at a time.
+ *
+ */
+struct SlicedDataStep {
+    bool            active = false;
+    int             pass = 0;        /**< 0: the added map's packs, 1: the map's own packs, 2: finished. */
+    int             phase = 0;       /**< 0: textures, 1: model packs. */
+    int             index = 0;       /**< Next name of the phase. */
+    int             pass_start = 0;  /**< First texture block of this pass. */
+    int             block = 0;       /**< Next texture block. */
+    int             next_block = 0;  /**< First block of the next pass (retail's tex_block after the added map). */
+    int             block_count = 0; /**< Blocks entered by finished passes (retail's add_block_num). */
+    mgCEnterIMGInfo info{};          /**< Shared by one pass's textures, as in LoadData. */
+    int             frames = 0;
+    int             pieces = 0;
+    double          longest_frame_ms = 0.0;
+    double          longest_piece_ms = 0.0;
+    std::string     longest_piece;
+    std::chrono::steady_clock::time_point started;
+};
+
+SlicedDataStep sliced_data;
+
+// Time a streamed section's build may take per frame; one texture or model pack is always built, however long.
+constexpr double kSliceBudgetMs = 8.0;
+
+double SliceMs(std::chrono::steady_clock::duration duration) {
+    return std::chrono::duration<double, std::milli>(duration).count();
+}
+
+/**
+ *
+ * Builds the next pieces of the data step; returns true once every piece is built and the block counts are stored.
+ *
+ */
+bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
+    auto &state = sliced_data;
+    if (!state.active) {
+        state = SlicedDataStep{};
+        state.active = true;
+        state.pass = info.files[1].enable != 0 ? 0 : 1;
+        state.next_block = info.tex_block;
+        state.pass_start = state.next_block;
+        state.block = state.pass_start;
+        state.started = std::chrono::steady_clock::now();
+    }
+    const auto frame_start = std::chrono::steady_clock::now();
+    ++state.frames;
+    bool built_one = false;
+    while (state.pass < 2) {
+        if (built_one && SliceMs(std::chrono::steady_clock::now() - frame_start) >= kSliceBudgetMs) {
+            break;
+        }
+        const SCN_LOADMAP_INFO2::MapFiles &files = info.files[state.pass == 0 ? 1 : 0];
+        const auto                         piece_start = std::chrono::steady_clock::now();
+        const int had = map->LoadDataItem(files.mpk_data, files.ipk_data, state.phase, state.index, &state.block,
+                                          &state.info, info.stack);
+        if (had == 0) {
+            if (state.phase == 0) {
+                state.phase = 1;
+                state.index = 0;
+                continue;
+            }
+            // End of a pass: what LoadData returns through tex_block, then the next pass starts after it.
+            const int count = state.block - state.pass_start;
+            state.block_count += count;
+            state.next_block += count;
+            ++state.pass;
+            state.phase = 0;
+            state.index = 0;
+            state.info = mgCEnterIMGInfo{};
+            state.pass_start = state.next_block;
+            state.block = state.pass_start;
+            continue;
+        }
+        const double piece_ms = SliceMs(std::chrono::steady_clock::now() - piece_start);
+        if (piece_ms > state.longest_piece_ms) {
+            state.longest_piece_ms = piece_ms;
+            char *name = state.phase == 0 ? map->map_info.GetImgName(state.index) : map->map_info.GetPCPName(state.index);
+            state.longest_piece = std::string(state.phase == 0 ? "textures " : "models ") + (name != nullptr ? name : "?");
+        }
+        ++state.pieces;
+        ++state.index;
+        built_one = true;
+    }
+    state.longest_frame_ms = std::max(state.longest_frame_ms, SliceMs(std::chrono::steady_clock::now() - frame_start));
+    if (state.pass < 2) {
+        return false;
+    }
+    info.tex_block_num = state.block_count;
+    state.active = false;
+    const std::string label(dc2::text::View(info.name));
+    CT_LOG_INFO(Town, "section build: {} built {} pieces over {} frames in {:.0f} ms; longest frame {:.0f} ms, longest piece {} ({:.0f} ms)",
+                label, state.pieces, state.frames, SliceMs(std::chrono::steady_clock::now() - state.started),
+                state.longest_frame_ms, state.longest_piece.empty() ? "none" : state.longest_piece, state.longest_piece_ms);
+    dc2::diag::Notef("section", "built {} over {} frames, longest frame {:.0f} ms", label, state.frames, state.longest_frame_ms);
+    return true;
+}
+
 } // namespace
 
 int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
@@ -436,7 +542,18 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
             return 0;
         }
 
-        result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+        if (step == SCN_LOADMAP_STEP_DATA) {
+            CMap *map = GetMap(bg_load_info.map_no);
+            if (map == nullptr) {
+                return 0;
+            }
+            if (!RunSlicedDataStep(map, bg_load_info)) {
+                return 0;
+            }
+            result = SCN_LOADMAP_STEP_EFFECT;
+        } else {
+            result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+        }
 
         if (result < 0) {
             return 0;
@@ -466,6 +583,8 @@ int CScene::LoadMap(int map_no, SCN_LOADMAP_INFO2 *info, int deferred) {
     info->map_no = map_no;
 
     if (deferred != 0) {
+        // A new background map starts its data step from the beginning.
+        sliced_data.active = false;
         if (LoadMapData(*info, 1) != 0) {
             bg_load_info = *info;
             bg_load_step = 1;

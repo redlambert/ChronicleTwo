@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -753,15 +754,34 @@ int CScene::LoadVillager(int map_no, int texb) {
     return count;
 }
 
-int CScene::LoadSubVillager(int map_no, int texb) {
-    int                 chara_nos[32];
-    CVillagerPlaceInfo *places[32];
-    int                 file_size = {};
-    char                suffix[4];
-    mgCMemory          *stack = {};
-    int                 count = {};
-    int                 loaded = {};
-    int                 i = {};
+namespace {
+
+/**
+ *
+ * Port: a sub villager load in progress, so a streamed section can load its villagers one per frame. The scene
+ * has one set of sub villager slots, so only one load runs at a time.
+ *
+ */
+struct SubVillagerLoad {
+    bool                active = false;     /**< Whether villagers are still to load. */
+    bool                defer_show = false; /**< Whether villagers stay hidden until all are loaded. */
+    int                 count = 0;          /**< Villagers the map lists. */
+    int                 next = 0;           /**< Next listed villager. */
+    int                 loaded = 0;         /**< Villagers loaded into slots so far. */
+    int                 texb = 0;           /**< First texture block of the sub villagers. */
+    int                 chara_nos[32]{};    /**< Villager numbers, as GetLoadVillagerList fills them. */
+    CVillagerPlaceInfo *places[32]{};       /**< Their places. */
+    int                 shown[32]{};        /**< Slots loaded but not yet shown, when defer_show is set. */
+    int                 shown_count = 0;    /**< Entries in shown. */
+};
+
+SubVillagerLoad sub_villager_load;
+
+} // namespace
+
+int CScene::BeginLoadSubVillager(int map_no, int texb, bool defer_show) {
+    auto &load = sub_villager_load;
+    load = SubVillagerLoad{};
 
     DeleteSubVillager();
 
@@ -770,64 +790,103 @@ int CScene::LoadSubVillager(int map_no, int texb) {
         return 0;
     }
 
-    mgCTextureManager *tex_manager = &mgTexManager;
-    count = GetLoadVillagerList(map_no, chara_nos, places);
+    load.count = std::min(GetLoadVillagerList(map_no, load.chara_nos, load.places), 32);
+    load.texb = texb;
+    load.defer_show = defer_show;
+    load.active = true;
     AssignStack(SCENE_STACK_SUB_VILLAGER);
-    stack = GetStack(SCENE_STACK_SUB_VILLAGER);
-    loaded = 0;
+    return load.count;
+}
 
-    for (i = 0; i < count; i++) {
-        auto model_name = GetVillagerModelName(chara_nos[i]);
-        if (!model_name) {
-            continue;
-        }
+bool CScene::LoadSubVillagerStep() {
+    auto &load = sub_villager_load;
+    if (!load.active) {
+        return true;
+    }
 
-        const auto read_storage = GetReadBufferBytes();
-        auto      *buffer = reinterpret_cast<u_int *>(read_storage.data());
-        int        rest_before = {};
-        int        block = texb + loaded;
-        int        slot = {};
-        tex_manager->DeleteBlock(block);
-        slot = -1;
-        int copy_from = SearchCopyModel(chara_nos[i]);
+    mgCTextureManager *tex_manager = &mgTexManager;
+    mgCMemory         *stack = GetStack(SCENE_STACK_SUB_VILLAGER);
+    char               suffix[4];
+    int                file_size = {};
 
-        if (copy_from >= 0) {
-            if (stack->stGetRest() >= 0x1900) {
-                slot = CopyChara(loaded + SCENE_SUB_VILLAGER_SLOT_TOP, copy_from, stack);
+    if (load.next < load.count) {
+        const int i = load.next++;
+        auto      model_name = GetVillagerModelName(load.chara_nos[i]);
+        if (model_name) {
+            const auto read_storage = GetReadBufferBytes();
+            auto      *buffer = reinterpret_cast<u_int *>(read_storage.data());
+            int        rest_before = {};
+            int        block = load.texb + load.loaded;
+            int        slot = -1;
+            bool       skip = false;
+            tex_manager->DeleteBlock(block);
+            int copy_from = SearchCopyModel(load.chara_nos[i]);
+
+            if (copy_from >= 0) {
+                if (stack->stGetRest() >= 0x1900) {
+                    slot = CopyChara(load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP, copy_from, stack);
+                } else {
+                    dc2::log::PrintGame("load vlgr memory over!!!");
+                }
+            } else if (LoadFile2(model_name->data(), read_storage, &file_size, LOAD_FILE_READ) == 0) {
+                skip = true;
             } else {
-                dc2::log::PrintGame("load vlgr memory over!!!");
+                int chr_size = GetChrFileSize(buffer, file_size);
+                rest_before = stack->stGetRest();
+
+                if (rest_before < chr_size / 16 + 1) {
+                    dc2::log::PrintGame("load vlgr memory over!!!");
+                    skip = true;
+                } else {
+                    std::snprintf(suffix, sizeof(suffix), "%d", load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP);
+                    dc2::text::Copy(tex_manager->name_suffix, dc2::text::View(suffix));
+                    slot = LoadChara(load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP, buffer, "info", stack, stack, stack,
+                                     load.texb + load.loaded, 0);
+                    tex_manager->name_suffix[0] = 0;
+                    dc2::log::PrintGame("used : %dkb (%dkb)\n", (rest_before - stack->stGetRest()) * 16 / 1024, chr_size / 1024);
+                }
             }
-        } else {
-            if (LoadFile2(model_name->data(), read_storage, &file_size, LOAD_FILE_READ) == 0) {
-                continue;
+
+            if (!skip) {
+                SetCharaNo(slot, load.chara_nos[i]);
+                CharaObjectOnOff(slot, stack);
+
+                if (GetCharacter(slot) != nullptr && RegisterVillager(slot, load.chara_nos[i], load.places[i]) != 0) {
+                    if (load.defer_show) {
+                        load.shown[load.shown_count++] = slot;
+                    } else {
+                        SetActive(1, slot);
+                    }
+                    load.loaded++;
+                }
             }
-
-            int chr_size = GetChrFileSize(buffer, file_size);
-            rest_before = stack->stGetRest();
-
-            if (rest_before < chr_size / 16 + 1) {
-                dc2::log::PrintGame("load vlgr memory over!!!");
-                continue;
-            }
-
-            std::snprintf(suffix, sizeof(suffix), "%d", loaded + SCENE_SUB_VILLAGER_SLOT_TOP);
-            dc2::text::Copy(tex_manager->name_suffix, dc2::text::View(suffix));
-            slot = LoadChara(loaded + SCENE_SUB_VILLAGER_SLOT_TOP, buffer, "info", stack, stack, stack, texb + loaded, 0);
-            tex_manager->name_suffix[0] = 0;
-            dc2::log::PrintGame("used : %dkb (%dkb)\n", (rest_before - stack->stGetRest()) * 16 / 1024, chr_size / 1024);
-        }
-
-        SetCharaNo(slot, chara_nos[i]);
-        CharaObjectOnOff(slot, stack);
-
-        if (GetCharacter(slot) != nullptr && RegisterVillager(slot, chara_nos[i], places[i]) != 0) {
-            SetActive(1, slot);
-            loaded++;
         }
     }
 
+    if (load.next < load.count) {
+        return false;
+    }
+
+    for (int index = 0; index < load.shown_count; ++index) {
+        SetActive(1, load.shown[index]);
+    }
+    load.active = false;
     sub_villager_time = GetNowVillagerTime();
     dc2::log::PrintGame("remain %dkByte\n", stack->stGetRest() * 16 / 1024);
+    return true;
+}
+
+void CScene::CancelLoadSubVillager() {
+    sub_villager_load.active = false;
+}
+
+int CScene::LoadSubVillager(int map_no, int texb) {
+    const int count = BeginLoadSubVillager(map_no, texb, false);
+    if (!sub_villager_load.active) {
+        return 0;
+    }
+    while (!LoadSubVillagerStep()) {
+    }
     return count;
 }
 
