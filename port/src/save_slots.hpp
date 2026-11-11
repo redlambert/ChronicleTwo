@@ -49,6 +49,11 @@ void SaveSlotSetPendingSpawn(std::optional<AutosaveSpawn> spawn);
  * Consumes a pending spawn once, discarding it when the active map differs.
  */
 std::optional<AutosaveSpawn> SaveSlotTakePendingSpawn(int map_no);
+/**
+ * Port: the Palm Brinks section the pending spawn for map_no stands in, without taking the spawn, so the town loads
+ * that section with the map; nothing when there is no such spawn or it stands in no section.
+ */
+std::optional<int> SaveSlotPendingSpawnSubMap(int map_no);
 
 std::filesystem::path SaveSlotsRoot();
 std::filesystem::path SaveSlotPath(int number, bool second_card = false);

@@ -745,6 +745,32 @@ TEST_F(SaveSlotTest, AutosaveSpawnIsConsumedOnceAfterLoadingTheAutosave) {
     EXPECT_FALSE(document->spawn);
 }
 
+TEST_F(SaveSlotTest, PalmBrinksAutosaveKeepsItsSectionAndDropsOldSpawns) {
+    live->map_no = 10;
+    AutosaveSpawn spawn;
+    spawn.map_no = 10;
+    spawn.sub_map_no = 11;
+    spawn.position[0] = 3;
+    ASSERT_TRUE(SaveSlotWriteAutosave(LOOP_EDIT, &spawn));
+    ASSERT_EQ(SaveSlotRead(SaveSlotAutosavePath(), *document), SaveSlotState::Ready);
+    ASSERT_TRUE(document->spawn);
+    EXPECT_EQ(document->spawn->sub_map_no, 11);
+    manager.GetAllSaveFileInfo();
+    manager.LoadFromMc(0);
+    EXPECT_EQ(SaveSlotPendingSpawnSubMap(10), 11);
+    EXPECT_FALSE(SaveSlotPendingSpawnSubMap(12));
+    ASSERT_TRUE(SaveSlotTakePendingSpawn(10));
+
+    // A Palm Brinks spawn written before sections were recorded may stand over an unloaded section; it is dropped.
+    const auto original = Bytes(SaveSlotAutosavePath());
+    auto       json = nlohmann::json::parse(std::string(original.begin(), original.end()));
+    json["pc"]["spawn"].erase("sub_map_no");
+    json.erase("checksum");
+    WriteText(SaveSlotAutosavePath(), json.dump(2));
+    ASSERT_EQ(SaveSlotRead(SaveSlotAutosavePath(), *document), SaveSlotState::Ready);
+    EXPECT_FALSE(document->spawn);
+}
+
 TEST_F(SaveSlotTest, FailedAutosavePayloadCannotApplyOrphanSpawn) {
     fs::create_directory(SaveSlotAutosavePath());
     AutosaveSpawn spawn;

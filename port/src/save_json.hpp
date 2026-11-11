@@ -58,6 +58,7 @@ using TownLayouts = std::array<TownLayout, SAVE_EDIT_DATA_MAX>;
 struct AutosaveSpawn {
     u64   counter = 0;        /**< Unique counter of the save the spawn belongs to. */
     int   map_no = -1;        /**< Main map of the spawn. */
+    int   sub_map_no = -1;    /**< Port: Palm Brinks section (map 11 to 14) the spawn stands in, or -1 for none. */
     float position[4] = {};   /**< Player position. */
     float rotation[4] = {};   /**< Player rotation. */
     float camera_pos[4] = {}; /**< Camera position. */

@@ -31,6 +31,7 @@
 #include "diag/recorder.hpp"
 #include "log/log.hpp"
 #include "platform/section_prefetch.hpp"
+#include "save_slots.hpp"
 #include "profile.hpp"
 #include "main.hpp"
 #include "mainloop.hpp"
@@ -2418,6 +2419,16 @@ int EditMapJump(int map_no) {
         map_no = 0xA;
     } else {
         sub_map_no = -1;
+    }
+
+    // Port: an autosave made inside a Palm Brinks section loads that section with the town, as a save made there
+    // would, so the player does not start above an unloaded section and fall forever.
+    if (map_no == 0xA && sub_map_no <= 0) {
+        if (const auto spawn_sub_map = SaveSlotPendingSpawnSubMap(0xA); spawn_sub_map && *spawn_sub_map > 0xA && *spawn_sub_map < 0xF) {
+            sub_map_no = *spawn_sub_map;
+            CT_LOG_INFO(Town, "autosave: starting in Palm Brinks section {}, loading it with the town", sub_map_no);
+            dc2::diag::Notef("section", "autosave spawn loads section {}", sub_map_no);
+        }
     }
 
     InitSubMapLoadStep();

@@ -466,6 +466,13 @@ std::optional<AutosaveSpawn> SaveSlotTakePendingSpawn(int map_no) {
     return std::nullopt;
 }
 
+std::optional<int> SaveSlotPendingSpawnSubMap(int map_no) {
+    if (pending_spawn && pending_spawn->map_no == map_no && pending_spawn->sub_map_no > 0) {
+        return pending_spawn->sub_map_no;
+    }
+    return std::nullopt;
+}
+
 fs::path SaveSlotsRoot() { return PathsSaveRoot() / "saves"; }
 
 fs::path SaveSlotPath(int number, bool second_card) {

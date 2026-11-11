@@ -1500,6 +1500,9 @@ void AutosaveTown() {
         autosaved_map = map;
         AutosaveSpawn spawn;
         spawn.map_no = GetSaveData()->map_no;
+        // Port: Palm Brinks streams its sections (maps 11 to 14) while the player walks. A spawn inside one records
+        // it, so loading the autosave loads that section too instead of leaving the player above nothing.
+        spawn.sub_map_no = map > 0xA && map < 0xF ? map : -1;
         chara->GetPosition(spawn.position);
         chara->GetRotation(spawn.rotation);
         camera->GetPos(spawn.camera_pos);
