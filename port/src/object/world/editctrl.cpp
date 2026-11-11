@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 
 #include <libvu0.h>
 
@@ -1323,7 +1324,13 @@ static void InitLadder(int mode, CScene *scene, CSceneEventData *event) {
     sceVu0ApplyMatrix(camera_offset, matrix, camera_offset);
     height = static_cast<float>(event->event.arg1);
     LdrSound = event->event.arg2;
-    current_foot = character->sound_info.foot_sound_id;
+    // Port: a ladder reached while the player is missing (as after some cutscenes) keeps footstep 0 instead of
+    // reading through a null pointer, which crashes on Switch.
+    if (character != nullptr) {
+        current_foot = character->sound_info.foot_sound_id;
+    } else {
+        CT_LOG_INFO_ONCE(Town, "missing player: ladder start used the default footstep sound");
+    }
     other_foot = event->event.arg3;
     sceVu0AddVector(LdrTopPos, LdrPos, top_offset);
     sceVu0AddVector(LdrBottomPos, LdrPos, bottom_offset);

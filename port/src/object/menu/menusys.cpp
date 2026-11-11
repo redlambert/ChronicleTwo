@@ -10535,7 +10535,11 @@ void CMenuItemInfo::SetItemEffect() {
         if (chara_effect == true) {
             float position[4];
             MenuActionChara[0]->GetPosition(position);
-            field_chara->SetPosition(position);
+            if (field_chara != nullptr) {
+                field_chara->SetPosition(position);
+            } else {
+                CT_LOG_INFO_ONCE(Menu, "missing player: item effect position not copied to the field character");
+            }
             FxScriptManPauseFlag = true;
             MenuActionChara[0]->effect_man = FxScriptMan;
             // Plays the ordinary recovery effect.

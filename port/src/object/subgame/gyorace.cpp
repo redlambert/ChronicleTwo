@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 #include "mw_runtime.h"
 
 #include <cmath>
@@ -644,7 +645,10 @@ int sgInitGyoRace(SubGameInfo *info) {
         CCharacter2  *character = scene->GetCharacter(*character_no);
         sceVu0FVECTOR position = {0.0f, -15.0f, 0.0f, 1.0f};
         position[0] = 190.0f + 15.0f * static_cast<float>(progress->lane);
-        position[2] = character->body_height / 4.0f;
+        if (character == nullptr) {
+            CT_LOG_INFO_ONCE(Town, "missing character: fish race fish {} did not load", *character_no);
+        }
+        position[2] = character != nullptr ? character->body_height / 4.0f : 0.0f;
         sceVu0FVECTOR   rotation = {0.0f, PI, 0.0f, 1.0f};
         BREEDFISH_USED *data = &(*item)->data.fish;
         CDataBreedFish *breed = GetBreedFishInfoData((*item)->item_no);
@@ -654,12 +658,14 @@ int sgInitGyoRace(SubGameInfo *info) {
             scale = 2.0f;
         }
 
-        character->SetScale(scale, scale, scale);
-        character->SetRotation(rotation);
-        character->SetPosition(position);
-        character->SetMotion("\x92\xCA\x8F\xED", 0);
-        character->SetStep(0.3f);
-        FishIMGReplace(buffer, character, (*item)->item_no, &(*item)->data.fish);
+        if (character != nullptr) {
+            character->SetScale(scale, scale, scale);
+            character->SetRotation(rotation);
+            character->SetPosition(position);
+            character->SetMotion("\x92\xCA\x8F\xED", 0);
+            character->SetStep(0.3f);
+            FishIMGReplace(buffer, character, (*item)->item_no, &(*item)->data.fish);
+        }
         fish_index++;
         CharaTexb++;
     } while (fish_index < GR_FISH_MAX);
@@ -706,6 +712,11 @@ void AutoCam(SubGameInfo *info) {
     CScene      *scene = info->scene;
     CCharacter2 *hero = scene->GetCharacter(fish_inf[hero_no].chara_no);
     float        hero_pos[4];
+    if (hero == nullptr) {
+        // Port: the camera keeps its last framing for a frame without the player's fish.
+        CT_LOG_INFO_ONCE(Town, "missing character: fish race camera skipped a frame");
+        return;
+    }
     hero->GetPosition(hero_pos);
     float nearest = 9999.0f;
     cam_no = 0;

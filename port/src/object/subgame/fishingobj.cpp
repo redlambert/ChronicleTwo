@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 #include "mw_runtime.h"
 
 #include <cmath>
@@ -771,6 +772,11 @@ int FishBattle(CScene *scene, CCPoly *poly_buffer, int poly_max) {
     }
 
     CCharacter2  *player = scene->GetCharacter(scene->player_chara);
+    if (player == nullptr) {
+        // Port: no player this frame; the fish battle waits a frame rather than crashing.
+        CT_LOG_INFO_ONCE(Town, "missing player: fish battle skipped a frame");
+        return 0;
+    }
     sceVu0FVECTOR player_rot;
     sceVu0FVECTOR player_pos;
     sceVu0FMATRIX matrix;

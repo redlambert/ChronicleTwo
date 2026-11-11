@@ -1,4 +1,5 @@
 #include "common.h"
+#include "log/log.hpp"
 #include "mw_runtime.h"
 
 #include <cstddef>
@@ -687,7 +688,10 @@ void MenuManualDraw() {
                         MonsterEffectEnter(GetMainScene(), effect_buffer, MONSTER_EFFECT_TEX_BLOCK);
                     }
 
-                    if (!is_town) {
+                    if (!is_town && chara == nullptr) {
+                        CT_LOG_INFO_ONCE(Menu, "missing player: menu character effects not attached");
+                    }
+                    if (!is_town && chara != nullptr) {
                         chara->effect_man = FxScriptMan;
                         chr_no = GetUserDataMan()->active_chr_no;
                         attribute = GetUserDataMan()->GetCharaStatusAttirbute(chr_no);

@@ -1,5 +1,6 @@
 // clang-format off
 #include "platform/native_config.hpp"
+#include "log/log.hpp"
 #include "memory/tracked_copy.hpp"
 #include "log/game_output.hpp"
 // clang-format on
@@ -3229,6 +3230,11 @@ float GetFishDist(CScene *scene) {
     float        fish_velo[4];
     float        matrix[4][4];
     CCharacter2 *chara = scene->GetCharacter(scene->player_chara);
+    if (chara == nullptr) {
+        // Port: no player to measure from; reads as far away rather than crashing.
+        CT_LOG_INFO_ONCE(Town, "missing player: fishing distance read as far away");
+        return 9999.0f;
+    }
     chara->GetPosition(chara_pos);
     chara->GetRotation(chara_rot);
     mgUnitMatrix(matrix);
