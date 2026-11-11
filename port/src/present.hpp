@@ -30,6 +30,9 @@ struct PresentStats {
     std::uint64_t unfinished_pairs = 0; /**< Authored frames a newer tick replaced before both images were shown. */
     std::uint64_t replay_ticks = 0;     /**< Ticks presented by replay rather than as an authored pair. */
     std::uint32_t last_draws = 0;
+    std::uint64_t forced_endpoints = 0;      /**< Endpoints a new tick's canonical render had to present first. */
+    double        forced_endpoint_wait_ms = 0.0; /**< Time those presents took, with the device held. */
+    std::uint64_t skipped_endpoints = 0;     /**< Endpoints pacing recovery skipped instead of waiting for them. */
 };
 
 bool                   PresentMouseActive();
@@ -39,6 +42,9 @@ PresentStats           PresentGetStats();
 void                   PresentResetStats();
 void                   PresentTickRendered();
 void                   PresentWaitFrame(int start, int frames);
+// video.pacing_recovery: skips, at most once a second, an endpoint a new tick's canonical render would otherwise wait
+// for with the device held. Game thread.
+void PresentSetPacingRecovery(bool enabled);
 // Async only: hands the tick just rendered to the render thread, whose frame began at tick `start` and lasts `frames`.
 // Called by the game thread holding a render lease.
 void PresentPublishTick(int start, int frames, bool canonical_endpoint_allowed = true);

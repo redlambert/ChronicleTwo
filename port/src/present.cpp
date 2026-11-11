@@ -127,6 +127,12 @@ std::atomic<std::uint64_t> async_display_frames{0};
 std::atomic<std::uint64_t> async_canonical_presents{0};
 std::atomic<std::uint64_t> async_unfinished_pairs{0};
 std::atomic<std::uint64_t> async_replay_ticks{0};
+std::atomic<std::uint64_t> forced_endpoints{0};
+std::atomic<std::uint64_t> forced_endpoint_wait_us{0};
+std::atomic<std::uint64_t> skipped_endpoints{0};
+std::atomic<bool>          pacing_recovery{true};
+// Render thread: when pacing recovery last skipped an endpoint.
+Clock::time_point          last_endpoint_skip{};
 
 // Device ownership serializes the idle hook and the pre-canonical endpoint retirement.
 PresentPacer                    render_pacer;
@@ -984,8 +990,23 @@ void BeforeCanonical() {
         const auto decision = render_pair.NextBeforeCanonical(now, frame.frame_start + frame.frame_length,
                                                               frame.settings.max_fps, render_pacer, gate);
         TracePairDecision(frame, ScheduleEvent::Retire, now, decision, gate);
-        if (decision.action == EndpointPair::Action::Endpoint) {
+        // Pacing recovery: presenting this endpoint now would wait, with the device held, for the image before it to
+        // reach the screen. That wait delays the game's next lease, which keeps the next tick late, which keeps the
+        // next endpoint late. Skipping one endpoint (its in-between image stays up a refresh longer) breaks the loop.
+        // Once a second at most, so a scene that can never keep up degrades as before instead of skipping every tick.
+        const bool skip = decision.action == EndpointPair::Action::Endpoint && pacing_recovery.load() &&
+                          gfx::PresentedGateActive() && now - last_endpoint_skip >= std::chrono::seconds(1) &&
+                          !gfx::PresentedGateReady();
+        if (skip) {
+            last_endpoint_skip = now;
+            if (skipped_endpoints.fetch_add(1) == 0) {
+                CT_LOG_INFO(Main, "pacing recovery: skipped a late endpoint instead of waiting for it (fix v1)");
+            }
+        } else if (decision.action == EndpointPair::Action::Endpoint) {
             const bool shown = PresentAuthoredEndpoint(frame);
+            const auto waited = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now);
+            forced_endpoints.fetch_add(1);
+            forced_endpoint_wait_us.fetch_add(static_cast<std::uint64_t>(std::max<std::int64_t>(waited.count(), 0)));
             if (shown) {
                 async_canonical_presents.fetch_add(1);
                 NoteAsyncPresented(Clock::now());
@@ -1096,8 +1117,15 @@ PresentStats PresentGetStats() {
         result.canonical_presents = async_canonical_presents.load();
         result.unfinished_pairs = async_unfinished_pairs.load();
         result.replay_ticks = async_replay_ticks.load();
+        result.forced_endpoints = forced_endpoints.load();
+        result.forced_endpoint_wait_ms = static_cast<double>(forced_endpoint_wait_us.load()) / 1000.0;
+        result.skipped_endpoints = skipped_endpoints.load();
     }
     return result;
+}
+
+void PresentSetPacingRecovery(bool enabled) {
+    pacing_recovery.store(enabled);
 }
 
 void PresentResetStats() {

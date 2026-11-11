@@ -152,6 +152,8 @@ FrameParts                                      g_parts;
 bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
 bool                                            g_flare_enabled = true;
+bool                                            g_pacing_recovery = true;
+PresentStats                                    g_window_present_start{};
 Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
 std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
@@ -319,21 +321,28 @@ void LogWindow(Clock::time_point now) {
         const double present_step = SiteTotal(g_window.other, "Kazarov PresentImage") / frames;
         const double queue_present = g_window.queue_present.total_ms / frames;
         const double acquire = g_window.acquire.total_ms / frames;
+        const PresentStats stats = PresentGetStats();
         CT_LOG_INFO(Main,
                     "diag window detail '{}': sun flare {}{}; chip per tick frame {:.1f} (max {:.1f}), per in-between "
                     "frame {:.1f} (max {:.1f}); render thread waiting on the chip {:.1f} ms per game frame (max {:.1f}); "
                     "present step {:.1f} ms per game frame = handing over {:.1f} + rest {:.1f} (mostly waiting for the "
-                    "screen's refresh, with the device held); getting a screen image {:.1f} ms per game frame",
+                    "screen's refresh, with the device held); getting a screen image {:.1f} ms per game frame; pacing "
+                    "recovery {}: end-of-frame images a new tick had to present first {} (waited {:.1f} ms in all), "
+                    "skipped {}",
                     g_area.name, g_flare_enabled ? "on" : "off",
                     g_window.flare_off_frames > 0
                         ? std::format(" (switched off in {} frames that would have drawn it)", g_window.flare_off_frames)
                         : std::string(),
                     g_window.tick_gpu.Average(), g_window.tick_gpu.max_ms, g_window.blend_gpu.Average(),
                     g_window.blend_gpu.max_ms, g_window.fence_wait.total_ms / frames, g_window.fence_wait.max_ms,
-                    present_step, queue_present, std::max(present_step - queue_present, 0.0), acquire);
+                    present_step, queue_present, std::max(present_step - queue_present, 0.0), acquire,
+                    g_pacing_recovery ? "on" : "off", stats.forced_endpoints - g_window_present_start.forced_endpoints,
+                    stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms,
+                    stats.skipped_endpoints - g_window_present_start.skipped_endpoints);
     }
     g_window = WindowStats{};
     g_window.start = now;
+    g_window_present_start = PresentGetStats();
 }
 
 /**
@@ -461,8 +470,8 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v5: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
-                      "wait, sun flare setting, area report every 30 s, worst frames named, town sub-zones");
+                      "frame parts v6: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
+                      "wait, sun flare and pacing recovery settings, area report every 30 s, worst frames named, town sub-zones");
 }
 
 } // namespace
@@ -517,6 +526,13 @@ void FollowFlareSetting() {
         g_flare_enabled = enabled;
         CT_LOG_INFO(Main, "diag: sun flare setting {} (Display settings)", enabled ? "on" : "off");
         Notef("flare", "setting {}", enabled ? "on" : "off");
+    }
+    const bool recovery = ConfigGet().pacing_recovery;
+    PresentSetPacingRecovery(recovery);
+    if (recovery != g_pacing_recovery) {
+        g_pacing_recovery = recovery;
+        CT_LOG_INFO(Main, "diag: pacing recovery setting {} (Display settings)", recovery ? "on" : "off");
+        Notef("pacing", "recovery {}", recovery ? "on" : "off");
     }
 }
 

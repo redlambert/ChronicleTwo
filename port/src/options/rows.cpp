@@ -332,6 +332,10 @@ std::vector<Page> MakePages() {
 #else
                                 Choice<&Config::interpolation>("video.interpolation", "Interpolation", "Smooths display frames between game ticks.", {"Off", "On"}),
 #endif
+                                Choice<&Config::lens_flare>("video.lens_flare", "Sun flare", "The glare when the camera faces the sun.\nOff is lighter where the sun is in view.", {"Off", "On"}),
+#ifdef __SWITCH__
+                                Choice<&Config::pacing_recovery>("video.pacing_recovery", "Pacing recovery", "When the screen falls behind, drops one in-between\nframe so the game itself doesn't slow down.", {"Off", "On"}),
+#endif
                                 Choice<&Config::aspect>("video.aspect", "Aspect ratio", "Auto fills the window. 4:3 adds black side bars.", {"Auto", "4:3"}),
                                 Number<&Config::ui_scale>("video.ui_scale", "UI scale", "Scales menus and HUD. Large values can crop the UI.\nUse Left to reduce the scale if it no longer fits.", {0.5, 0.65, 0.75, 0.85, 1, 1.1, 1.25, 1.5}, 100, "%"),
                                 Choice<&Config::font_sharp>("video.text_font", "Text font", "Sharp draws the letters as outlines, clear at any\n"
