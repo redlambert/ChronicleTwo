@@ -19,6 +19,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: true
+      # kazarov-overlay/README.md: this port's Kazarov fixes, copied over the pinned submodule before building.
+      - name: Apply the Kazarov overlay
+        run: |
+          for folder in kazarov-overlay/*/; do
+            cp -a "$folder" tools/kazarov/
+          done
+          git -C tools/kazarov status --short
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       # The context is tools/switch with the FFmpeg configuration script beside it, as tools/switch/build.sh prepares it.
       - name: Prepare the toolchain image context
