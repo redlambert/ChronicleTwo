@@ -443,12 +443,18 @@ struct SlicedDataStep {
     double          longest_piece_ms = 0.0;
     std::string     longest_piece;
     std::chrono::steady_clock::time_point started;
+    bool            caught_up = false; /**< The build ran past kSliceCatchUpMs and took the larger budget. */
 };
 
 SlicedDataStep sliced_data;
 
-// Time a streamed section's build may take per frame; one texture or model pack is always built, however long.
-constexpr double kSliceBudgetMs = 8.0;
+// Time a streamed section's build may take per frame; one texture or model piece is always built, however long.
+// Busy Palm Brinks frames already run 25 to 30 ms of their 33, so 8 ms per frame pushed most build frames late
+// (fix v1: the bridge crossing's 1 to 2 s of chop). A build still running after kSliceCatchUpMs goes back to the
+// larger budget, so a slow section cannot end up holding the player at its edge.
+constexpr double kSliceBudgetMs = 3.0;
+constexpr double kSliceCatchUpBudgetMs = 8.0;
+constexpr double kSliceCatchUpMs = 3000.0;
 
 double SliceMs(std::chrono::steady_clock::duration duration) {
     return std::chrono::duration<double, std::milli>(duration).count();
@@ -472,9 +478,14 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
     }
     const auto frame_start = std::chrono::steady_clock::now();
     ++state.frames;
+    const bool   catching_up = SliceMs(frame_start - state.started) >= kSliceCatchUpMs;
+    const double budget_ms = catching_up ? kSliceCatchUpBudgetMs : kSliceBudgetMs;
+    if (catching_up && !state.caught_up) {
+        state.caught_up = true;
+    }
     bool built_one = false;
     while (state.pass < 2) {
-        if (built_one && SliceMs(std::chrono::steady_clock::now() - frame_start) >= kSliceBudgetMs) {
+        if (built_one && SliceMs(std::chrono::steady_clock::now() - frame_start) >= budget_ms) {
             break;
         }
         const SCN_LOADMAP_INFO2::MapFiles &files = info.files[state.pass == 0 ? 1 : 0];
@@ -552,9 +563,10 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
     info.tex_block_num = state.block_count;
     state.active = false;
     const std::string label(dc2::text::View(info.name));
-    CT_LOG_INFO(Town, "section build: {} built {} pieces over {} frames in {:.0f} ms; longest frame {:.0f} ms, "
-                      "longest pack or texture {} ({:.0f} ms in all), slowest model {} ({:.0f} ms)",
-                label, state.pieces, state.frames, SliceMs(std::chrono::steady_clock::now() - state.started),
+    CT_LOG_INFO(Town, "section build (fix v1, {:.0f} ms per frame{}): {} built {} pieces over {} frames in {:.0f} ms; "
+                      "longest frame {:.0f} ms, longest pack or texture {} ({:.0f} ms in all), slowest model {} ({:.0f} ms)",
+                kSliceBudgetMs, state.caught_up ? ", then 8 ms to catch up" : "", label, state.pieces, state.frames,
+                SliceMs(std::chrono::steady_clock::now() - state.started),
                 state.longest_frame_ms, state.longest_piece.empty() ? "none" : state.longest_piece, state.longest_piece_ms,
                 state.longest_model.empty() ? "none" : state.longest_model, state.longest_model_ms);
     dc2::diag::Notef("section", "built {} over {} frames, longest frame {:.0f} ms", label, state.frames, state.longest_frame_ms);
