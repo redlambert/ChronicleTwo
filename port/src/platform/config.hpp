@@ -50,9 +50,9 @@ struct Config : HostSettings {
     bool               interpolation = kConfigInterpolationDefault;
     // video.lens_flare: draws the sun's lens flare in towns and dungeons when the sun is in view.
     bool lens_flare = true;
-    // video.fast_map_prep: reuses unchanged scenery faces instead of rebuilding them every frame, and draws them from
-    // meshes on the graphics chip instead of copying them into every frame (render/mg_visual.cpp).
-    bool fast_map_prep = true;
+    // video.screen_wait_overlap: lets the game hand over its next frame while the renderer waits for the screen's
+    // refresh, instead of waiting for the renderer (Kazarov gfx::SetScreenWaitOverlap).
+    bool screen_wait_overlap = true;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;

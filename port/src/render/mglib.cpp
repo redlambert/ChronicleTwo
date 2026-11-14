@@ -2267,7 +2267,12 @@ void mgEndFrame(mgCDrawManager *manager) {
 
     {
         // The tick's device work runs under the lease; an Async render thread draws no display frame until it ends.
-        gfx::RenderLease lease;
+        // A light lease (screen wait overlap) may also run while the render thread waits for the screen: only when
+        // this tick neither uploads nor renders here, so its canonical render goes to the render thread afterwards.
+        const bool light = gfx::ActiveRenderThreadMode() == gfx::RenderThreadMode::Async && letterbox_clears < 0 &&
+                           color_marks.empty() && !menuworld::PauseFrameWanted() &&
+                           !(exit_frames > 0 && frame_count + 1 == exit_frames) && !mgVisualPortHasUploadWork();
+        gfx::RenderLease lease(light);
         lease_got = std::chrono::steady_clock::now();
         bool             tick_rendered = false;
         bool             canonical_endpoint_allowed = true;

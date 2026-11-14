@@ -19,7 +19,6 @@
 #include "platform/config.hpp"
 #include "present.hpp"
 #include "render/renderer.hpp"
-#include "render/visual_mesh.hpp"
 
 namespace dc2::diag {
 namespace {
@@ -167,9 +166,10 @@ FrameParts                                      g_parts;
 bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
 bool                                            g_flare_enabled = true;
-bool                                            g_fast_map_prep = true;
+bool                                            g_screen_wait_overlap = true;
 uint64_t                                        g_window_immediate_start = 0; // copied-vertex draws at window start
-mgVisualPortPrepStats                           g_window_prep_start{};        // fast map prep counts at window start
+uint64_t                                        g_window_overlap_start = 0;   // screen wait overlap leases at window start
+double                                          g_window_resume_start = 0.0;  // and the renderer's wait for them
 PresentStats                                    g_window_present_start{};
 Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
@@ -417,7 +417,7 @@ void LogWindow(Clock::time_point now) {
                     "frame {:.1f} (max {:.1f}); render thread waiting on the chip {:.1f} ms per game frame (max {:.1f}); "
                     "present step {:.1f} ms per game frame = handing over {:.1f} + rest {:.1f} (mostly waiting for the "
                     "screen's refresh, with the device held); getting a screen image {:.1f} ms per game frame; "
-                    "fast map prep {}; end-of-frame images a new tick had to present first {} (waited {:.1f} ms in all)",
+                    "screen wait overlap {}; end-of-frame images a new tick had to present first {} (waited {:.1f} ms in all)",
                     g_area.name, g_flare_enabled ? "on" : "off",
                     g_window.flare_off_frames > 0
                         ? std::format(" (switched off in {} frames that would have drawn it)", g_window.flare_off_frames)
@@ -425,11 +425,12 @@ void LogWindow(Clock::time_point now) {
                     g_window.tick_gpu.Average(), g_window.tick_gpu.max_ms, g_window.blend_gpu.Average(),
                     g_window.blend_gpu.max_ms, g_window.fence_wait.total_ms / frames, g_window.fence_wait.max_ms,
                     present_step, queue_present, std::max(present_step - queue_present, 0.0), acquire,
-                    g_fast_map_prep ? "on" : "off", stats.forced_endpoints - g_window_present_start.forced_endpoints,
+                    g_screen_wait_overlap ? "on" : "off", stats.forced_endpoints - g_window_present_start.forced_endpoints,
                     stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms);
     }
-    const uint64_t              immediate = mgPortImmediateDrawCount();
-    const mgVisualPortPrepStats prep = mgVisualPortGetPrepStats();
+    const uint64_t immediate = mgPortImmediateDrawCount();
+    const uint64_t overlap = gfx::ScreenWaitOverlapLeases();
+    const double   resume = gfx::ScreenWaitOverlapResumeMs();
     if (g_window.frames >= 30) {
         const double      frames = static_cast<double>(g_window.frames);
         const std::string parts = PartsText(g_window.parts, frames, 0.1, false, 16);
@@ -437,17 +438,16 @@ void LogWindow(Clock::time_point now) {
             CT_LOG_INFO(Main, "diag window draw parts '{}' (ms/draws per game frame): {}", g_area.name, parts);
         }
         CT_LOG_INFO(Main,
-                    "diag window map prep '{}': fast map prep {}; per game frame, scenery faces reused {:.0f}, rebuilt "
-                    "{:.0f}, newly moved onto the chip {:.0f} ({} so far); draws copying their vertices into the frame "
-                    "{:.0f}",
-                    g_area.name, g_fast_map_prep ? "on" : "off",
-                    static_cast<double>(prep.reused - g_window_prep_start.reused) / frames,
-                    static_cast<double>(prep.rebuilt - g_window_prep_start.rebuilt) / frames,
-                    static_cast<double>(prep.promoted - g_window_prep_start.promoted) / frames, prep.promoted,
+                    "diag window screen wait '{}': screen wait overlap {}; game frames handed over while the renderer "
+                    "waited for the screen {} of {} ({} so far), renderer then waited {:.1f} ms per game frame for the "
+                    "game; draws copying their vertices into the frame {:.0f} per game frame",
+                    g_area.name, g_screen_wait_overlap ? "on" : "off", overlap - g_window_overlap_start,
+                    g_window.frames, overlap, (resume - g_window_resume_start) / frames,
                     static_cast<double>(immediate - g_window_immediate_start) / frames);
     }
     g_window_immediate_start = immediate;
-    g_window_prep_start = prep;
+    g_window_overlap_start = overlap;
+    g_window_resume_start = resume;
     g_window = WindowStats{};
     g_window.start = now;
     g_window_present_start = PresentGetStats();
@@ -583,9 +583,9 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v8: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
-                      "wait, sun flare and fast map prep settings, area report every 30 s, worst frames named, draw parts "
-                      "with draw counts (dungeon and town), map prep counts, longer area timing lists, renderer tick-frame "
+                      "frame parts v9: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
+                      "wait, sun flare and screen wait overlap settings, area report every 30 s, worst frames named, draw parts "
+                      "with draw counts (dungeon and town), screen wait overlap counts, longer area timing lists, renderer tick-frame "
                       "replay timings");
 }
 
@@ -642,12 +642,12 @@ void FollowFlareSetting() {
         CT_LOG_INFO(Main, "diag: sun flare setting {} (Display settings)", enabled ? "on" : "off");
         Notef("flare", "setting {}", enabled ? "on" : "off");
     }
-    const bool fast = ConfigGet().fast_map_prep;
-    mgVisualPortSetFastPrep(fast);
-    if (fast != g_fast_map_prep) {
-        g_fast_map_prep = fast;
-        CT_LOG_INFO(Main, "diag: fast map prep setting {} (Display settings)", fast ? "on" : "off");
-        Notef("prep", "fast map prep {}", fast ? "on" : "off");
+    const bool overlap = ConfigGet().screen_wait_overlap;
+    gfx::SetScreenWaitOverlap(overlap);
+    if (overlap != g_screen_wait_overlap) {
+        g_screen_wait_overlap = overlap;
+        CT_LOG_INFO(Main, "diag: screen wait overlap setting {} (Display settings)", overlap ? "on" : "off");
+        Notef("overlap", "screen wait overlap {}", overlap ? "on" : "off");
     }
 }
 

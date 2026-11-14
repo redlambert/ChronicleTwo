@@ -62,18 +62,6 @@ std::optional<ProjectedBodyWitness> ProjectProg0BodyWitness(
 
 mgVisualFaceMesh        mgVisualPortBuildFace(const mgCVisualMDT &visual, const mgCFace &face, bool skinned);
 void                    mgVisualPortRefreshFace(mgCVisualMDT *visual, mgCFace *face);
-
-// Fast map prep (video.fast_map_prep): a plain model's face that stays unchanged is reused instead of rebuilt each
-// frame, and is then drawn from a mesh on the graphics chip instead of copied into every frame. Game thread.
-void mgVisualPortSetFastPrep(bool enabled);
-
-// Plain faces since start: reused unchanged, rebuilt, and moved onto the graphics chip. Game thread.
-struct mgVisualPortPrepStats {
-    uint64_t reused = 0;
-    uint64_t rebuilt = 0;
-    uint64_t promoted = 0;
-};
-mgVisualPortPrepStats mgVisualPortGetPrepStats();
 const mgVisualFaceMesh *mgVisualPortFaceMesh(const mgCFace *face);
 // The batch of the current face meshes of the groups from first up to end (exclusive), rebuilt when a face was
 // refreshed and uploaded when it can be.
@@ -81,6 +69,8 @@ const mgVisualGroupMesh *mgVisualPortGroupMesh(const mgFACE_GROUP *first, const 
 void                     mgVisualPortSweep();
 // Uploads the batches first drawn this tick. Called under the tick's render lease, where the uploads do not wait for
 // the render thread; until then the batches draw from their CPU copies.
+// Whether mgVisualPortFlushUploads has a batch to upload this tick.
+bool mgVisualPortHasUploadWork();
 void mgVisualPortFlushUploads();
 
 mgCDrawEnv mgVisualPortDrawEnv(const mgCVisualAttr &attr, const mgCDrawEnv &base);
