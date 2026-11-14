@@ -229,6 +229,8 @@ void mgPortDrawMeshImmediateProg0(std::span<const gfx::Vertex3D> vertices, std::
 int mgPortVuProg();
 // Draws submitted through the mgPortDraw* calls since start, for the frame watch's draw parts (diag/recorder.cpp).
 uint64_t mgPortDrawCount();
+// Of those, the draws whose vertices were copied into the frame (no mesh on the graphics chip).
+uint64_t mgPortImmediateDrawCount();
 
 // Display lists
 

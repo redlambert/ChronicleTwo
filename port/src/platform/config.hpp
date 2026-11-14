@@ -50,9 +50,9 @@ struct Config : HostSettings {
     bool               interpolation = kConfigInterpolationDefault;
     // video.lens_flare: draws the sun's lens flare in towns and dungeons when the sun is in view.
     bool lens_flare = true;
-    // video.pacing_recovery: skips one late end-of-frame image at most once a second, so the game's frame timing can
-    // fall back into step instead of staying a refresh behind.
-    bool pacing_recovery = true;
+    // video.fast_map_prep: reuses unchanged scenery faces instead of rebuilding them every frame, and draws them from
+    // meshes on the graphics chip instead of copying them into every frame (render/mg_visual.cpp).
+    bool fast_map_prep = true;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;

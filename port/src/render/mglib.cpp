@@ -861,6 +861,8 @@ bool screen_clip = false;
 bool ready = false;
 // Draws submitted through the mgPortDraw* calls; read by the frame watch's draw parts.
 std::atomic<uint64_t> port_draw_count{0};
+// Of those, the draws whose vertices are copied into the frame instead of drawn from a mesh on the graphics chip.
+std::atomic<uint64_t> port_immediate_draw_count{0};
 bool frame_open = false;
 bool gfx_open = false;
 bool recording = false;
@@ -1906,6 +1908,7 @@ void mgPortDrawMeshImmediate(std::span<const gfx::Vertex3D> vertices, std::span<
         return;
     }
     port_draw_count.fetch_add(1, std::memory_order_relaxed);
+    port_immediate_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMeshImmediate(vertices, indices, constants, texture, TargetDrawState(state), transform);
 }
@@ -1931,6 +1934,7 @@ void mgPortDrawMeshImmediateProg0(std::span<const gfx::Vertex3D> vertices, std::
         return;
     }
     port_draw_count.fetch_add(1, std::memory_order_relaxed);
+    port_immediate_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMeshImmediateProg0(vertices, indices, constants, prog0, texture, TargetDrawState(state), transform,
                                 palette);
@@ -1942,6 +1946,10 @@ int mgPortVuProg() {
 
 uint64_t mgPortDrawCount() {
     return port_draw_count.load(std::memory_order_relaxed);
+}
+
+uint64_t mgPortImmediateDrawCount() {
+    return port_immediate_draw_count.load(std::memory_order_relaxed);
 }
 
 // Display lists

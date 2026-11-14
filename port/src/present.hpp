@@ -42,9 +42,6 @@ PresentStats           PresentGetStats();
 void                   PresentResetStats();
 void                   PresentTickRendered();
 void                   PresentWaitFrame(int start, int frames);
-// video.pacing_recovery: skips, at most once a second, an endpoint a new tick's canonical render would otherwise wait
-// for with the device held. Game thread.
-void PresentSetPacingRecovery(bool enabled);
 // Async only: hands the tick just rendered to the render thread, whose frame began at tick `start` and lasts `frames`.
 // Called by the game thread holding a render lease.
 void PresentPublishTick(int start, int frames, bool canonical_endpoint_allowed = true);

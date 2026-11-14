@@ -844,7 +844,18 @@ struct FaceEntry {
     std::shared_ptr<const mgVisualFaceMesh> mesh;
     bool                                    persistent = false;
     int                                     last_frame = 0;
+    // Fast map prep: fingerprint of what the mesh was built from (0 for none), checks it has passed unchanged,
+    // and whether it was moved onto the graphics chip for staying unchanged (so it is swept like a plain face).
+    std::uint64_t source = 0;
+    int           stable = 0;
+    bool          promoted = false;
 };
+
+// Fast map prep (video.fast_map_prep) and its counts since start.
+bool                  fast_prep = true;
+mgVisualPortPrepStats prep_stats;
+// Unchanged checks before a plain face is drawn from a mesh on the graphics chip: about a second of play.
+constexpr int kStableChecks = 30;
 
 std::unordered_map<const mgCFace *, FaceEntry> &FaceTable() {
     static std::unordered_map<const mgCFace *, FaceEntry> table;
@@ -865,6 +876,7 @@ struct GroupEntry {
     const mgFACE_GROUP          *end = nullptr; /**< The group after the batch's last. */
     std::uint64_t                revision = 0;  /**< face_revision when the sources were last checked. */
     bool                         persistent = false;
+    bool                         promoted = false; /**< Persistent only through fast map prep's moved faces. */
     int                          last_frame = 0;
 };
 
@@ -1003,13 +1015,82 @@ mgVisualFaceMesh mgVisualPortBuildFace(const mgCVisualMDT &visual, const mgCFace
     return out;
 }
 
+namespace {
+
+/**
+ * A fingerprint of everything a plain face's mesh is built from: its type, its corners' indices and the vertex data
+ * they select. An equal fingerprint builds an equal mesh, short of a 64-bit collision. Never 0.
+ */
+std::uint64_t FaceSource(const mgCVisualMDT &visual, const mgCFace &face) {
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    const auto    mix = [&hash](std::uint64_t value) {
+        hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    };
+    const auto mix_floats = [&mix](const float *values, int count) {
+        for (int i = 0; i < count; i++) {
+            mix(std::bit_cast<std::uint32_t>(values[i]));
+        }
+    };
+
+    mix(face.type);
+    mix(static_cast<std::uint64_t>(static_cast<std::uint32_t>(face.vertex_num)));
+    mix(reinterpret_cast<std::uintptr_t>(face.index));
+    for (int corner = 0; corner < face.vertex_num; corner++) {
+        const CornerStreams streams = CornerOf(face, corner);
+        mix(static_cast<std::uint32_t>(streams.position));
+        mix_floats(visual.vertex[streams.position], 3);
+        if (streams.normal >= 0) {
+            mix_floats(visual.normal[streams.normal], 3);
+        }
+        if (streams.uv >= 0) {
+            mix_floats(visual.uv[streams.uv], 2);
+        }
+        if (streams.colour >= 0) {
+            mix_floats(visual.colour[streams.colour], 4);
+        }
+    }
+    return hash != 0 ? hash : 1;
+}
+
+} // namespace
+
+void mgVisualPortSetFastPrep(bool enabled) {
+    fast_prep = enabled;
+}
+
+mgVisualPortPrepStats mgVisualPortGetPrepStats() {
+    return prep_stats;
+}
+
 void mgVisualPortRefreshFace(mgCVisualMDT *visual, mgCFace *face) {
     CT_PROFILE_ZONE("Build visual face");
-    {
-    }
     const int kind = visual->Iam();
     auto [found, added] = FaceTable().try_emplace(face);
-    FaceEntry       &entry = found->second;
+    FaceEntry &entry = found->second;
+
+    // Fast map prep: a plain face whose sources are unchanged keeps its mesh without being rebuilt, and once it has
+    // stayed unchanged for a while it is drawn from a mesh on the graphics chip instead of copied into every frame.
+    // Any change shows in the fingerprint and sends the face back through the full rebuild below.
+    const bool    plain = kind == MG_VISUAL_KIND_MDT;
+    std::uint64_t source = 0;
+    if (fast_prep && plain) {
+        source = FaceSource(*visual, *face);
+        if (!added && entry.mesh != nullptr && entry.source == source) {
+            ++prep_stats.reused;
+            if (!entry.promoted && ++entry.stable >= kStableChecks) {
+                entry.promoted = true;
+                entry.persistent = true;
+                ++face_revision;
+                if (prep_stats.promoted++ == 0) {
+                    CT_LOG_INFO(Main, "fast map prep (fix v1): unchanged scenery faces are reused and drawn from the "
+                                      "graphics chip instead of rebuilt and copied every frame");
+                }
+            }
+            entry.last_frame = mgPortFrameCount();
+            return;
+        }
+    }
+
     mgVisualFaceMesh mesh = mgVisualPortBuildFace(*visual, *face, kind == MG_VISUAL_KIND_MOTION_MDT);
     const bool       persistent = kind == MG_VISUAL_KIND_FIX_MDT || kind == MG_VISUAL_KIND_MOTION_MDT;
     if (added || entry.persistent != persistent) {
@@ -1025,7 +1106,13 @@ void mgVisualPortRefreshFace(mgCVisualMDT *visual, mgCFace *face) {
     // A plain visual is rebuilt on every CreateFacePacket and would churn GPU meshes if uploaded, so its
     // group batches stay on the CPU.
     entry.persistent = persistent;
+    entry.source = source;
+    entry.stable = 0;
+    entry.promoted = false;
     entry.last_frame = mgPortFrameCount();
+    if (plain) {
+        ++prep_stats.rebuilt;
+    }
 }
 
 namespace {
@@ -1082,11 +1169,13 @@ std::shared_ptr<const mgVisualGroupMesh> GroupMesh(const mgFACE_GROUP *first, co
         cached = &found->second;
     }
     bool                         persistent = true;
+    bool                         promoted = false;
     bool                         matched = cached != nullptr;
     size_t                       kept = 0;
     std::vector<const mgCFace *> visited;
     VisitGroupFaces(first, end, [&](const mgCFace *face, const FaceEntry &entry) {
         persistent = persistent && entry.persistent;
+        promoted = promoted || entry.promoted;
         matched = matched && kept < cached->sources.size() && cached->sources[kept].get() == entry.mesh.get();
         visited.push_back(face);
         ++kept;
@@ -1113,6 +1202,7 @@ std::shared_ptr<const mgVisualGroupMesh> GroupMesh(const mgFACE_GROUP *first, co
     entry.end = end;
     entry.revision = face_revision;
     entry.persistent = persistent;
+    entry.promoted = persistent && promoted;
     entry.last_frame = mgPortFrameCount();
     UploadIfReady(entry);
     return entry.mesh;
@@ -1177,7 +1267,8 @@ void mgVisualPortSweep() {
                          it->second.mesh->indices.size() * sizeof(uint32_t);
         }
 #endif
-        if (it->second.persistent || frame - it->second.last_frame <= kFaceUnusedFrameLimit) {
+        const bool kept_always = it->second.persistent && !it->second.promoted;
+        if (kept_always || frame - it->second.last_frame <= kFaceUnusedFrameLimit) {
             ++it;
             continue;
         }
@@ -1196,7 +1287,7 @@ void mgVisualPortSweep() {
         }
 #endif
         const int unused = frame - it->second.last_frame;
-        if (it->second.persistent) {
+        if (it->second.persistent && !it->second.promoted) {
             if (unused > kPersistentMeshUnusedFrameLimit) {
                 ReleaseMesh(*it->second.mesh);
             }
