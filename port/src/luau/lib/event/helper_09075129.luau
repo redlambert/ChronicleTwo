@@ -24,7 +24,13 @@ local function helper_09075129()
 	event.initialize_event()
 	event.assign_memory_stack(5)
 	event.clear_memory_stack(5)
-	event.call_command(1035, 8, var1, var2, var3, var4) -- retail: the handler rejects 5 arguments
+	do
+		local out1, out2, out3, out4 = event.get_triggered_event_data_5(8)
+		var1 = out1 or var1
+		var2 = out2 or var2
+		var3 = out3 or var3
+		var4 = out4 or var4
+	end
 	var4 = vm.bits_float(event.get_triggered_event_data_2(11)) or var4
 	var0 = event.get_triggered_event_data_2(9) or var0
 	event.attach_object_handle_to_character(0, 0)

@@ -24,7 +24,13 @@ local function helper_826a3ea7(arg0: s32)
 	event.get_sound_id(1)
 	var11 = event.get_triggered_event_data_2(3) or var11
 	event.get_triggered_event_data_2(4)
-	event.call_command(1035, 8, world_coord_pos, world_coord_pos_2, world_coord_pos_3, world_coord_rot) -- retail: the handler rejects 5 arguments
+	do
+		local out1, out2, out3, out4 = event.get_triggered_event_data_5(8)
+		world_coord_pos = out1 or world_coord_pos
+		world_coord_pos_2 = out2 or world_coord_pos_2
+		world_coord_pos_3 = out3 or world_coord_pos_3
+		world_coord_rot = out4 or world_coord_rot
+	end
 	print("train_id=", var11, "----------------\n")
 	print("fpos[0]=", vm.float(world_coord_pos), "---------------\n")
 	print("fpos[1]=", vm.float(world_coord_pos_2), "---------------\n")

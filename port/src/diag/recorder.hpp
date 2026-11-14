@@ -11,10 +11,14 @@
 //
 // Note() is safe from any thread and never logs. Dump() and Tick() run on the main thread only.
 
+#include <chrono>
+#include <cstdint>
 #include <format>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include "profile.hpp"
 
 namespace dc2::diag {
 
@@ -64,9 +68,36 @@ bool LensFlareEnabled();
 void NoteFrameParts(const FrameParts &parts);
 
 /**
+ * Adds one part of a game frame's draw recording: its time and the draws it submitted. Main thread only.
+ * Name must be a string literal: the frame watch keeps the pointer.
+ */
+void NoteDrawPart(const char *name, double ms, uint64_t draws);
+
+/**
+ * Times one part of the draw recording and counts the draws it submits, for the frame watch's draw parts.
+ */
+class DrawPart {
+public:
+    explicit DrawPart(const char *name);
+    ~DrawPart();
+    DrawPart(const DrawPart &) = delete;
+    DrawPart &operator=(const DrawPart &) = delete;
+
+private:
+    const char                           *name_;
+    std::chrono::steady_clock::time_point start_;
+    uint64_t                              draws_;
+};
+
+/**
  * Advances the frame watch by one main-loop tick. Area names the place the player is in, such as
  * "town m01" or "dungeon 0 d01b01"; a change of area writes the finished area's summary.
  */
 void Tick(int loop_no, std::string_view area, bool mark_held);
 
 } // namespace dc2::diag
+
+// A timing point that also feeds the frame watch's draw parts (time and draws per part, per area and per 5 s).
+#define CT_DRAW_PART(name) \
+    CT_PROFILE_ZONE(name); \
+    ::dc2::diag::DrawPart ct_draw_part(name)

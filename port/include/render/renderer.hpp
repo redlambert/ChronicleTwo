@@ -227,6 +227,8 @@ void mgPortDrawMeshImmediateProg0(std::span<const gfx::Vertex3D> vertices, std::
                                   const gfx::Prog0Palette  *palette = nullptr);
 // The VU program mgSendVuProg selected last, -1 for none.
 int mgPortVuProg();
+// Draws submitted through the mgPortDraw* calls since start, for the frame watch's draw parts (diag/recorder.cpp).
+uint64_t mgPortDrawCount();
 
 // Display lists
 

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -858,6 +859,8 @@ struct RenderTargetEntry {
 
 bool screen_clip = false;
 bool ready = false;
+// Draws submitted through the mgPortDraw* calls; read by the frame watch's draw parts.
+std::atomic<uint64_t> port_draw_count{0};
 bool frame_open = false;
 bool gfx_open = false;
 bool recording = false;
@@ -1866,6 +1869,7 @@ void mgPortDraw2D(gfx::Primitive primitive, std::span<const gfx::Vertex2D> verti
     if (!ready || !gfx_open) {
         return;
     }
+    port_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     const float source_scale = TextureScale(texture.texture);
     const float target_scale = TextureScale(current_target);
@@ -1890,6 +1894,7 @@ void mgPortDrawMesh(gfx::MeshHandle mesh, uint32_t first_index, uint32_t index_c
     if (!ready || !gfx_open) {
         return;
     }
+    port_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMesh(mesh, first_index, index_count, constants, texture, TargetDrawState(state), transform);
 }
@@ -1900,6 +1905,7 @@ void mgPortDrawMeshImmediate(std::span<const gfx::Vertex3D> vertices, std::span<
     if (!ready || !gfx_open) {
         return;
     }
+    port_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMeshImmediate(vertices, indices, constants, texture, TargetDrawState(state), transform);
 }
@@ -1911,6 +1917,7 @@ void mgPortDrawMeshProg0(gfx::MeshHandle mesh, uint32_t first_index, uint32_t in
     if (!ready || !gfx_open) {
         return;
     }
+    port_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMeshProg0(mesh, first_index, index_count, constants, prog0, texture, TargetDrawState(state), transform,
                        palette);
@@ -1923,6 +1930,7 @@ void mgPortDrawMeshImmediateProg0(std::span<const gfx::Vertex3D> vertices, std::
     if (!ready || !gfx_open) {
         return;
     }
+    port_draw_count.fetch_add(1, std::memory_order_relaxed);
 
     gfx::DrawMeshImmediateProg0(vertices, indices, constants, prog0, texture, TargetDrawState(state), transform,
                                 palette);
@@ -1930,6 +1938,10 @@ void mgPortDrawMeshImmediateProg0(std::span<const gfx::Vertex3D> vertices, std::
 
 int mgPortVuProg() {
     return now_prog_id;
+}
+
+uint64_t mgPortDrawCount() {
+    return port_draw_count.load(std::memory_order_relaxed);
 }
 
 // Display lists

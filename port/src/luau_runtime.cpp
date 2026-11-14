@@ -765,6 +765,16 @@ int CallGeneric(lua_State *lua, int no, int first, const luau_bindings::Command 
                     std::span(text_sources).first(text_count));
         ActiveScript(lua);
     }
+    // Event command 1035 field 8 is the map event's position and facing. Fixed scripts read it through
+    // event.get_triggered_event_data_5; a script still calling it here drops it, and its scene aims at the map's origin.
+    const RS_STACKDATA &first_argument = slots[1];
+    const bool          field_8 = (first_argument.type == RS_INT && first_argument.val.i == 8) ||
+                         (first_argument.type == RS_FLOAT && first_argument.val.f == 8.0f);
+    if (command == nullptr && no == 1035 && count == 5 && field_8) {
+        CT_LOG_WARN_LIMIT(std::chrono::milliseconds{250}, Script,
+                          "event spot: an old script dropped the map event's position (event command 1035, field 8), so "
+                          "its scene aims at the map's origin; replace scripts/scripts.pack from the same build (fix v1)");
+    }
     return 0;
 }
 

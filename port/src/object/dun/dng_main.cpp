@@ -1,5 +1,6 @@
 #include "common.h"
 #include "log/log.hpp"
+#include "diag/recorder.hpp"
 #include "mw_runtime.h"
 
 #include <algorithm>
@@ -1168,7 +1169,7 @@ int LoopDungeonMain() {
 }
 
 void DngMainDraw() {
-    CT_PROFILE_ZONE("Dungeon draw recording");
+    CT_DRAW_PART("Dungeon draw recording");
     mgCTextureManager *tex_man = &mgTexManager;
     SV_CONFIG_OPTION  *config = {};
     sceVu0FVECTOR      cam_pos;
@@ -1241,6 +1242,7 @@ void DngMainDraw() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_SKY_DRAW)) {
+        CT_DRAW_PART("Dungeon draw sky");
         DngMainScene->DrawSky(0);
     }
 
@@ -1257,8 +1259,11 @@ void DngMainDraw() {
         list[15] = -1;
         mgBeginDraw(&BuffWorkData, list, nullptr);
         MainChara__2->GetPosition(view);
-        floor_map->PreDraw(view);
-        floor_map->Draw();
+        {
+            CT_DRAW_PART("Dungeon draw map parts");
+            floor_map->PreDraw(view);
+            floor_map->Draw();
+        }
         mgCTexture *water = tex_man->GetTexture("water", -1);
         int         water_block = -1;
 
@@ -1267,6 +1272,7 @@ void DngMainDraw() {
             WaveTable.GetEffect();
         }
 
+        CT_DRAW_PART("Dungeon draw map flush");
         mgPreEndDraw(nullptr);
         int g = {};
         int b = {};
@@ -1294,10 +1300,14 @@ void DngMainDraw() {
         mgSetPkTextureRepeat(0);
     }
 
-    EdEventFirstDraw();
+    {
+        CT_DRAW_PART("Dungeon draw event scenes");
+        EdEventFirstDraw();
+    }
     tex_man->ReloadTexture(100, (sceVif1Packet *) nullptr);
     mgBeginDrawShadow(TEX_ShadowTexture, nullptr);
     {
+        CT_DRAW_PART("Dungeon draw character shadows");
         sceVu0FMATRIX ld;
         sceVu0FMATRIX lc;
 
@@ -1335,6 +1345,7 @@ void DngMainDraw() {
             dir[1] = 0.8f;
         }
 
+        CT_DRAW_PART("Dungeon draw character shadows");
         sceVu0FVECTOR pos;
         sceVu0FVECTOR normal = {0.0f, 1.0f, 0.0f, 0.0f};
 
@@ -1354,11 +1365,15 @@ void DngMainDraw() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+        CT_DRAW_PART("Dungeon draw monster shadows");
         ActiveMonster->DrawShadowActMonster();
     }
 
-    TreasureBoxMan->DrawShadow(cam_pos);
-    mgEndDrawShadow(TEX_ShadowTexture, nullptr);
+    {
+        CT_DRAW_PART("Dungeon draw character shadows");
+        TreasureBoxMan->DrawShadow(cam_pos);
+        mgEndDrawShadow(TEX_ShadowTexture, nullptr);
+    }
     {
         int           old = mgActiveLighting(1, 1);
         sceVu0FMATRIX ld;
@@ -1370,15 +1385,21 @@ void DngMainDraw() {
         DngMainScene->GetCharaLighting(lc, amb);
         mgSetLight(ld, lc);
         mgSetAmbient(amb);
-        tex_man->ReloadTexture(TreasureBoxMan->tex_block, (sceVif1Packet *) nullptr);
-        camera->GetPos(cam_pos);
-        TreasureBoxMan->Draw(cam_pos);
+        {
+            CT_DRAW_PART("Dungeon draw treasure chests");
+            tex_man->ReloadTexture(TreasureBoxMan->tex_block, (sceVif1Packet *) nullptr);
+            camera->GetPos(cam_pos);
+            TreasureBoxMan->Draw(cam_pos);
+        }
 
         if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+            CT_DRAW_PART("Dungeon draw monsters");
             ActiveMonster->DrawActMonster();
         }
 
         if (DngMainScene->CheckDrawChara(0)) {
+            CT_DRAW_PART("Dungeon draw characters");
+
             if (auto *floor_map = dc2::dungeon::MainMap().Get(); floor_map != nullptr) {
                 int        num = 0;
                 CFuncPoint points[2];
@@ -1396,6 +1417,8 @@ void DngMainDraw() {
             MainChara__2->DrawDirect();
         }
 
+        CT_DRAW_PART("Dungeon draw characters");
+
         for (int c = 0; c < DNG_CHARA_EVENT_NUM; c++) {
             if (DngMainScene->CheckDrawChara(c + DNG_CHARA_SLOT_EVENT) && DngMainScene->GetType(SCENE_DATA_CHARA, c + DNG_CHARA_SLOT_EVENT) != SCENE_CHARA_TYPE_EFFECT) {
                 CCharacter2 *chara = DngMainScene->GetCharacter(c + DNG_CHARA_SLOT_EVENT);
@@ -1411,6 +1434,7 @@ void DngMainDraw() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MAP_DRAW)) {
+        CT_DRAW_PART("Dungeon draw depth of field");
         mgTexManager.ReloadTexture(100, (sceVif1Packet *) nullptr);
         mgCTexture *work = TEX_ShadowTexture;
 
@@ -1426,40 +1450,48 @@ void DngMainDraw() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_SKY_DRAW)) {
+        CT_DRAW_PART("Dungeon draw lens flare");
         tex_man->ReloadTexture(100, (sceVif1Packet *) nullptr);
         DngMainScene->DrawLensFlare(100, "work", "work2");
     }
 
-    mgSetPkTextureRepeat(0);
-    tex_man->ReloadTexture(0xAD, (sceVif1Packet *) nullptr);
-    sceVu0FVECTOR chara_pos;
+    {
+        CT_DRAW_PART("Dungeon draw pickups, circles and wires");
+        mgSetPkTextureRepeat(0);
+        tex_man->ReloadTexture(0xAD, (sceVif1Packet *) nullptr);
+        sceVu0FVECTOR chara_pos;
 
-    MainChara__2->GetPosition(chara_pos);
-    RandomCircle.Draw(chara_pos);
-    tex_man->ReloadTexture(0xAD, (sceVif1Packet *) nullptr);
-    GeoStone.GeoDraw(chara_pos);
-    tex_man->ReloadTexture(0x6A, (sceVif1Packet *) nullptr);
+        MainChara__2->GetPosition(chara_pos);
+        RandomCircle.Draw(chara_pos);
+        tex_man->ReloadTexture(0xAD, (sceVif1Packet *) nullptr);
+        GeoStone.GeoDraw(chara_pos);
+        tex_man->ReloadTexture(0x6A, (sceVif1Packet *) nullptr);
 
-    if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PICKUPS)) {
-        mgCTexture *tex = tex_man->GetTexture("keyetc", 0x6A);
+        if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PICKUPS)) {
+            mgCTexture *tex = tex_man->GetTexture("keyetc", 0x6A);
 
-        for (int p = 0; p < DNG_PULL_ITEM_NUM; p++) {
-            PullItem[p].Draw(tex);
+            for (int p = 0; p < DNG_PULL_ITEM_NUM; p++) {
+                PullItem[p].Draw(tex);
+            }
+        }
+
+        sceVu0FVECTOR work[256];
+
+        if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PICKUPS)) {
+            for (int w = 0; w < DNG_AFTER_WIRE_NUM; w++) {
+                afterWire[w].StepWire();
+                afterWire[w].DrawWire(work);
+            }
         }
     }
 
-    sceVu0FVECTOR work[256];
-
-    if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PICKUPS)) {
-        for (int w = 0; w < DNG_AFTER_WIRE_NUM; w++) {
-            afterWire[w].StepWire();
-            afterWire[w].DrawWire(work);
-        }
+    {
+        CT_DRAW_PART("Dungeon draw monsters");
+        ActiveMonster->DrawInvisibleMonster();
     }
-
-    ActiveMonster->DrawInvisibleMonster();
 
     if (auto *floor_map = dc2::dungeon::MainMap().Get(); floor_map != nullptr && !(BattleAreaScene->pause_flag & DNG_PAUSE_MAP_DRAW)) {
+        CT_DRAW_PART("Dungeon draw map late flush and water");
         int g = {};
         int b = {};
         int block = {};
@@ -1485,6 +1517,7 @@ void DngMainDraw() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MAP_DRAW)) {
+        CT_DRAW_PART("Dungeon draw map effects");
         DngMainScene->DrawEffect(0x4B);
     }
 
@@ -1500,6 +1533,8 @@ void DngMainDraw() {
         mgSetLight(ld, lc);
         mgSetAmbient(amb);
 
+        CT_DRAW_PART("Dungeon draw event effects");
+
         for (int c = 0; c < DNG_CHARA_EVENT_NUM; c++) {
             if (DngMainScene->CheckDrawChara(c + DNG_CHARA_SLOT_EVENT) && DngMainScene->GetType(SCENE_DATA_CHARA, c + DNG_CHARA_SLOT_EVENT) == SCENE_CHARA_TYPE_EFFECT) {
                 CCharacter2 *chara = DngMainScene->GetCharacter(c + DNG_CHARA_SLOT_EVENT);
@@ -1513,50 +1548,60 @@ void DngMainDraw() {
 
         mgActiveLighting(old, 0);
     }
-    tex_man->ReloadTexture(0x49, (sceVif1Packet *) nullptr);
-    map_effect.Draw(&MainCamera);
-    HealingEffectMan.Draw(&MainCamera);
-    BattleFX.Draw();
+    {
+        CT_DRAW_PART("Dungeon draw battle effects");
+        tex_man->ReloadTexture(0x49, (sceVif1Packet *) nullptr);
+        map_effect.Draw(&MainCamera);
+        HealingEffectMan.Draw(&MainCamera);
+        BattleFX.Draw();
 
-    for (int e = 0; e < DNG_WEAPON_EFFECT_NUM; e++) {
-        wep_effect[e].Step();
-        wep_effect[e].Draw();
+        for (int e = 0; e < DNG_WEAPON_EFFECT_NUM; e++) {
+            wep_effect[e].Step();
+            wep_effect[e].Draw();
+        }
+
+        ActiveMonster->DrawPiyori();
+        MiniEffPrimMan.Draw();
+        SwordLuminous.Draw();
+        RocketLauncher.Draw();
+        LaserGun.Draw();
+        tex_man->ReloadTexture(0x6B, (sceVif1Packet *) nullptr);
+
+        for (int e = 0; e < DNG_ELEMENT_EFFECT_NUM; e++) {
+            Sparc_fx[e].Draw();
+            thunder[e].Draw();
+            tornado[e].Draw();
+            chillAfterHit[e].Draw();
+            fireAfterHit[e].Draw();
+        }
     }
 
-    ActiveMonster->DrawPiyori();
-    MiniEffPrimMan.Draw();
-    SwordLuminous.Draw();
-    RocketLauncher.Draw();
-    LaserGun.Draw();
-    tex_man->ReloadTexture(0x6B, (sceVif1Packet *) nullptr);
+    {
+        CT_DRAW_PART("Dungeon draw character effects");
+        tex_man->ReloadTexture(0x4A, (sceVif1Packet *) nullptr);
 
-    for (int e = 0; e < DNG_ELEMENT_EFFECT_NUM; e++) {
-        Sparc_fx[e].Draw();
-        thunder[e].Draw();
-        tornado[e].Draw();
-        chillAfterHit[e].Draw();
-        fireAfterHit[e].Draw();
-    }
+        if (DngMainScene->CheckDrawChara(0)) {
+            MainChara__2->DrawEffect();
+        }
 
-    tex_man->ReloadTexture(0x4A, (sceVif1Packet *) nullptr);
+        for (int c = 0; c < DNG_CHARA_EVENT_NUM; c++) {
+            if (DngMainScene->CheckDrawChara(c + DNG_CHARA_SLOT_EVENT) && DngMainScene->GetType(SCENE_DATA_CHARA, c + DNG_CHARA_SLOT_EVENT) != SCENE_CHARA_TYPE_EFFECT) {
+                CCharacter2 *chara = DngMainScene->GetCharacter(c + DNG_CHARA_SLOT_EVENT);
 
-    if (DngMainScene->CheckDrawChara(0)) {
-        MainChara__2->DrawEffect();
-    }
-
-    for (int c = 0; c < DNG_CHARA_EVENT_NUM; c++) {
-        if (DngMainScene->CheckDrawChara(c + DNG_CHARA_SLOT_EVENT) && DngMainScene->GetType(SCENE_DATA_CHARA, c + DNG_CHARA_SLOT_EVENT) != SCENE_CHARA_TYPE_EFFECT) {
-            CCharacter2 *chara = DngMainScene->GetCharacter(c + DNG_CHARA_SLOT_EVENT);
-
-            if (chara != nullptr) {
-                chara->DrawEffect();
+                if (chara != nullptr) {
+                    chara->DrawEffect();
+                }
             }
         }
     }
 
-    ActiveMonster->DrawEffectScript();
+    {
+        CT_DRAW_PART("Dungeon draw monster effect scripts");
+        ActiveMonster->DrawEffectScript();
+    }
 
     if (BattleAreaScene->weather == DNG_WEATHER_RAIN) {
+        CT_DRAW_PART("Dungeon draw rain");
         CPreSprite prim;
 
         prim.Initialize(nullptr, nullptr);
@@ -1585,192 +1630,198 @@ void DngMainDraw() {
         prim.End();
     }
 
-    sgDrawSubGameChara();
-    sgDrawSubGameEffect();
-    sgDrawSubGameSystem();
-    CSphida *sphida = GetSphidaPtr();
+    {
+        CT_DRAW_PART("Dungeon draw sub-games");
+        sgDrawSubGameChara();
+        sgDrawSubGameEffect();
+        sgDrawSubGameSystem();
+        CSphida *sphida = GetSphidaPtr();
 
-    if (sphida != nullptr) {
-        sphida->Draw();
+        if (sphida != nullptr) {
+            sphida->Draw();
+        }
     }
 
-    int k = {};
-    s8  show = BattleAreaScene->statusbar_show;
+    {
+        CT_DRAW_PART("Dungeon draw HUD, messages and photo");
+        int k = {};
+        s8  show = BattleAreaScene->statusbar_show;
 
-    if (NowTakePhoto()) {
-        show = false;
-    }
+        if (NowTakePhoto()) {
+            show = false;
+        }
 
-    if (show && debag_param && !(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+        if (show && debag_param && !(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+            tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
+            LockOnModel.Draw();
+        }
+
+        if (show && debag_param && !(BattleAreaScene->pause_flag & (DNG_PAUSE_MONSTER_NAMES | DNG_PAUSE_MONSTER_DRAW)) && !config->monster_name) {
+            LockOnModel.DrawMess(0x58);
+        }
+
         tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
-        LockOnModel.Draw();
-    }
+        RedMarkModel->Draw();
 
-    if (show && debag_param && !(BattleAreaScene->pause_flag & (DNG_PAUSE_MONSTER_NAMES | DNG_PAUSE_MONSTER_DRAW)) && !config->monster_name) {
-        LockOnModel.DrawMess(0x58);
-    }
+        if (show && debag_param) {
+            DngMainScene->DrawExclamationMark(RedMarkModel->frame);
 
-    tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
-    RedMarkModel->Draw();
+            if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+                ActiveMonster->DrawLifeGage(config->anger_counter, config->enemy_hp);
 
-    if (show && debag_param) {
-        DngMainScene->DrawExclamationMark(RedMarkModel->frame);
+                if (!config->damage_off) {
+                    DamageScore.Draw();
+                    DamageScore2.Draw(DngMainScene);
 
-        if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
-            ActiveMonster->DrawLifeGage(config->anger_counter, config->enemy_hp);
-
-            if (!config->damage_off) {
-                DamageScore.Draw();
-                DamageScore2.Draw(DngMainScene);
-
-                for (k = 0; k < DNG_DAMAGE_SCORE_MONS_NUM; k++) {
-                    DamageScoreMons[k].Draw();
+                    for (k = 0; k < DNG_DAMAGE_SCORE_MONS_NUM; k++) {
+                        DamageScoreMons[k].Draw();
+                    }
                 }
             }
+
+            LevelupInfo.Draw();
         }
 
-        LevelupInfo.Draw();
-    }
-
-    if (!NowTakePhoto()) {
-        DrawStatusBord();
-    }
-
-    if (show && debag_param) {
-        WarningGage2.Draw();
-
-        if (!BattleAreaScene->script.running && !(BattleAreaScene->pause_flag & DNG_PAUSE_MINIMAP) && config->map != SV_CONFIG_MAP_OFF) {
-            tex_man->ReloadTexture(0x66, (sceVif1Packet *) nullptr);
-            sceVu0FVECTOR pos;
-
-            MainChara__2->GetPosition(pos);
-
-            if (config->map == SV_CONFIG_MAP_SMALL) {
-                AutoMapGen.mini_map.large = 0;
-                AutoMapGen.mini_map.x = 436;
-                AutoMapGen.mini_map.y = 144;
-                AutoMapGen.mini_map.w = 112;
-                AutoMapGen.mini_map.h = 112;
-            }
-
-            if (config->map == SV_CONFIG_MAP_LARGE) {
-                AutoMapGen.mini_map.x = 336;
-                AutoMapGen.mini_map.y = 212;
-                AutoMapGen.mini_map.w = 320;
-                AutoMapGen.mini_map.h = 280;
-                AutoMapGen.mini_map.large = 1;
-            }
-
-            AutoMapGen.mini_map.Draw(pos);
-            tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
-            AutoMapGen.mini_map.DrawSymbolOpen();
-            GeoStone.DrawMiniMapSymbol(&AutoMapGen.mini_map);
-            ActiveMonster->DrawMiniMapSymbol(&AutoMapGen.mini_map);
-            TreasureBoxMan->DrawMiniMapSymbol(&AutoMapGen.mini_map);
-            RandomCircle.DrawSymbol(&AutoMapGen.mini_map);
-            CSphida *sphida2 = GetSphidaPtr();
-
-            if (sphida2 != nullptr) {
-                sphida2->DrawMiniMapSymbol(&AutoMapGen.mini_map);
-            }
-
-            AutoMapGen.mini_map.DrawSymbolClose();
-            AutoMapGen.mini_map.DrawSymbol_Chara(MainChara__2);
+        if (!NowTakePhoto()) {
+            DrawStatusBord();
         }
-    }
 
-    for (int c = 0; c < COLPRIM_MAX; c++) {
-        ColPrimMan.prim[c].DebugDraw();
-    }
+        if (show && debag_param) {
+            WarningGage2.Draw();
 
-    EdEventDraw();
-    tex_man->ReloadTexture(0x58, (sceVif1Packet *) nullptr);
+            if (!BattleAreaScene->script.running && !(BattleAreaScene->pause_flag & DNG_PAUSE_MINIMAP) && config->map != SV_CONFIG_MAP_OFF) {
+                tex_man->ReloadTexture(0x66, (sceVif1Packet *) nullptr);
+                sceVu0FVECTOR pos;
 
-    if (show && debag_param) {
-        MsgTaskMan.Step();
-        MsgTaskMan.Draw();
-    }
+                MainChara__2->GetPosition(pos);
 
-    EventMess->Step();
-    EventMess->DrawMesWin();
-    GetSystemMessage()->Step();
-    GetSystemMessage()->DrawMesWin();
-    EventTimeDraw();
+                if (config->map == SV_CONFIG_MAP_SMALL) {
+                    AutoMapGen.mini_map.large = 0;
+                    AutoMapGen.mini_map.x = 436;
+                    AutoMapGen.mini_map.y = 144;
+                    AutoMapGen.mini_map.w = 112;
+                    AutoMapGen.mini_map.h = 112;
+                }
 
-    if (show && debag_param) {
-        StartupEpisodeTitle.Step();
-        StartupEpisodeTitle.DrawEpisode(0x58, 0x48);
-    }
+                if (config->map == SV_CONFIG_MAP_LARGE) {
+                    AutoMapGen.mini_map.x = 336;
+                    AutoMapGen.mini_map.y = 212;
+                    AutoMapGen.mini_map.w = 320;
+                    AutoMapGen.mini_map.h = 280;
+                    AutoMapGen.mini_map.large = 1;
+                }
 
-    if (NowTakePhoto()) {
-        int                       photo_neta = {};
-        int                       monster = {};
-        USER_PICTURE_INFO        *picture = {};
-        CInventUserData          *invent = {};
-        CFuncPoint               *point = {};
-        CScene::InScreenCharaInfo chara_info{};
-        float                     distance = {};
+                AutoMapGen.mini_map.Draw(pos);
+                tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
+                AutoMapGen.mini_map.DrawSymbolOpen();
+                GeoStone.DrawMiniMapSymbol(&AutoMapGen.mini_map);
+                ActiveMonster->DrawMiniMapSymbol(&AutoMapGen.mini_map);
+                TreasureBoxMan->DrawMiniMapSymbol(&AutoMapGen.mini_map);
+                RandomCircle.DrawSymbol(&AutoMapGen.mini_map);
+                CSphida *sphida2 = GetSphidaPtr();
 
-        tex_man->ReloadTexture(0x67, (sceVif1Packet *) nullptr);
-        chara_info.chara_no = -1;
-        chara_info.dist = 0.0f;
-        chara_info.in_center = 0;
-        invent = &DngUserData->invent_data;
-        photo_neta = ActiveMonster->CheckPhoto(&chara_info);
-        monster = chara_info.chara_no;
-        picture = invent->IsPhotoSpace(nullptr);
+                if (sphida2 != nullptr) {
+                    sphida2->DrawMiniMapSymbol(&AutoMapGen.mini_map);
+                }
 
-        if (DrawTakePhoto(picture, &distance)) {
-            InScreenFuncInfo func_info{};
-
-            func_info.range = -1.0f;
-            func_info.unk_04 = 0;
-            func_info.dist = -1.0f;
-            func_info.range = distance;
-            point = DngMainScene->InScreenFunc(&func_info);
-            picture->map_no = SearchMapNo(BattleAreaScene->map_name);
-            int neta = -1;
-
-            picture->neta_id = -1;
-            picture->npc_no = -1;
-
-            if (point != nullptr) {
-                neta = point->invent.neta_no;
+                AutoMapGen.mini_map.DrawSymbolClose();
+                AutoMapGen.mini_map.DrawSymbol_Chara(MainChara__2);
             }
+        }
 
-            if (neta == 30001) {
-                neta = -1;
-                picture->npc_no = 260;
-            }
+        for (int c = 0; c < COLPRIM_MAX; c++) {
+            ColPrimMan.prim[c].DebugDraw();
+        }
 
-            if (neta > 0) {
-                picture->neta_id = neta;
-                sndSePlay(GetSystemSndID(), SYSTEM_SE_IDEA, 0);
-            }
+        EdEventDraw();
+        tex_man->ReloadTexture(0x58, (sceVif1Packet *) nullptr);
 
-            if (monster >= 0) {
-                picture->monster_no = monster;
+        if (show && debag_param) {
+            MsgTaskMan.Step();
+            MsgTaskMan.Draw();
+        }
 
-                if (photo_neta > 0) {
-                    picture->neta_id = photo_neta;
+        EventMess->Step();
+        EventMess->DrawMesWin();
+        GetSystemMessage()->Step();
+        GetSystemMessage()->DrawMesWin();
+        EventTimeDraw();
+
+        if (show && debag_param) {
+            StartupEpisodeTitle.Step();
+            StartupEpisodeTitle.DrawEpisode(0x58, 0x48);
+        }
+
+        if (NowTakePhoto()) {
+            int                       photo_neta = {};
+            int                       monster = {};
+            USER_PICTURE_INFO        *picture = {};
+            CInventUserData          *invent = {};
+            CFuncPoint               *point = {};
+            CScene::InScreenCharaInfo chara_info{};
+            float                     distance = {};
+
+            tex_man->ReloadTexture(0x67, (sceVif1Packet *) nullptr);
+            chara_info.chara_no = -1;
+            chara_info.dist = 0.0f;
+            chara_info.in_center = 0;
+            invent = &DngUserData->invent_data;
+            photo_neta = ActiveMonster->CheckPhoto(&chara_info);
+            monster = chara_info.chara_no;
+            picture = invent->IsPhotoSpace(nullptr);
+
+            if (DrawTakePhoto(picture, &distance)) {
+                InScreenFuncInfo func_info{};
+
+                func_info.range = -1.0f;
+                func_info.unk_04 = 0;
+                func_info.dist = -1.0f;
+                func_info.range = distance;
+                point = DngMainScene->InScreenFunc(&func_info);
+                picture->map_no = SearchMapNo(BattleAreaScene->map_name);
+                int neta = -1;
+
+                picture->neta_id = -1;
+                picture->npc_no = -1;
+
+                if (point != nullptr) {
+                    neta = point->invent.neta_no;
+                }
+
+                if (neta == 30001) {
+                    neta = -1;
+                    picture->npc_no = 260;
+                }
+
+                if (neta > 0) {
+                    picture->neta_id = neta;
                     sndSePlay(GetSystemSndID(), SYSTEM_SE_IDEA, 0);
                 }
+
+                if (monster >= 0) {
+                    picture->monster_no = monster;
+
+                    if (photo_neta > 0) {
+                        picture->neta_id = photo_neta;
+                        sndSePlay(GetSystemSndID(), SYSTEM_SE_IDEA, 0);
+                    }
+                }
+
+                SetTookPhotoData(picture);
             }
 
-            SetTookPhotoData(picture);
+            if (DngStatus.mode == DNG_STATUS_FIELD) {
+                DrawTakePhotoSystem(0x58, invent);
+            }
         }
 
-        if (DngStatus.mode == DNG_STATUS_FIELD) {
-            DrawTakePhotoSystem(0x58, invent);
-        }
+        DrawHelpMes();
+        DngMainScene->fade.Draw();
+        DrawEventEdit();
+        DebugMainDraw();
+        dngDebugDraw();
+        DrawDebugWindow();
     }
-
-    DrawHelpMes();
-    DngMainScene->fade.Draw();
-    DrawEventEdit();
-    DebugMainDraw();
-    dngDebugDraw();
-    DrawDebugWindow();
 }
 
 void DngStep() {

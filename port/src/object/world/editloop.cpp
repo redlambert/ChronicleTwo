@@ -1885,7 +1885,7 @@ int EditLoop() {
 
     mgFlushRenderInfo();
     {
-        CT_PROFILE_ZONE("Town draw");
+        CT_DRAW_PART("Town draw");
         EditEvent.Draw(MainScene);
         EditDraw();
     }
@@ -2957,7 +2957,7 @@ int EditDrawCore() {
     }
 
     {
-        CT_PROFILE_ZONE("Town draw sky");
+        CT_DRAW_PART("Town draw sky");
         MainScene->DrawSky(-1);
     }
     map = MainScene->GetMap(MainScene->active_map);
@@ -3031,7 +3031,7 @@ int EditDrawCore() {
                 WalkChara->GetPosition(walk_pos);
             }
 
-            CT_PROFILE_ZONE("Town draw map parts");
+            CT_DRAW_PART("Town draw map parts");
             maps[map_index]->PreDraw(walk_pos);
             maps[map_index]->Draw();
         }
@@ -3054,7 +3054,7 @@ int EditDrawCore() {
 
         mgPreEndDraw(nullptr);
         int texture_blocks[128];
-        CT_PROFILE_ZONE("Town draw map flush");
+        CT_DRAW_PART("Town draw map flush");
 
         for (texture_group = 0; texture_group < 6; texture_group++) {
             reverse_block_count = MainScene->GetTextureBlockNo(texture_group, texture_blocks, 128);
@@ -3118,7 +3118,7 @@ int EditDrawCore() {
     if (LoopMode == EDIT_LOOP_WALK) {
         tex_manager->ReloadTexture(0x9F, (sceVif1Packet *) nullptr);
         screen = tex_manager->GetTexture("shadow_work", 0x9F);
-        CT_PROFILE_ZONE("Town draw characters and shadows");
+        CT_DRAW_PART("Town draw characters and shadows");
         mgBeginDrawShadow(screen, nullptr);
         EditDrawShadowChara(MainScene);
         sgDrawSubGameCharaShadow();
@@ -3137,7 +3137,7 @@ int EditDrawCore() {
     mgSetPkTextureRepeat(1);
 
     if (map_draw != 0) {
-        CT_PROFILE_ZONE("Town draw late flush");
+        CT_DRAW_PART("Town draw late flush");
         int later_texture_blocks[128];
 
         for (int texture_group = 6; texture_group < 16; texture_group++) {
@@ -3152,7 +3152,7 @@ int EditDrawCore() {
     }
 
     {
-        CT_PROFILE_ZONE("Town draw effect scripts");
+        CT_DRAW_PART("Town draw effect scripts");
         MainScene->DrawEffectScript(-1);
     }
 
@@ -3190,12 +3190,12 @@ int EditDrawCore() {
     }
 
     {
-        CT_PROFILE_ZONE("Town draw character effects");
+        CT_DRAW_PART("Town draw character effects");
         EditDrawEffectChara(MainScene);
     }
 
     if (map_draw != 0) {
-        CT_PROFILE_ZONE("Town draw water");
+        CT_DRAW_PART("Town draw water");
         mgCTexture *water_screen = tex_manager->GetTexture("water_work", 0x9E);
         mgCTexture *water_ref = tex_manager->GetTexture("ref", 0x9E);
         mgCCamera  *water_camera = MainScene->GetCamera(MainScene->active_camera);
@@ -3213,7 +3213,7 @@ int EditDrawCore() {
     }
 
     if (map_draw != 0) {
-        CT_PROFILE_ZONE("Town draw effects and objects");
+        CT_DRAW_PART("Town draw effects and objects");
         MainScene->DrawEffect(0x42);
         tex_manager->ReloadTexture(0xA4, (sceVif1Packet *) nullptr);
         MainScene->DrawGameObject(MapNo);
@@ -3224,7 +3224,7 @@ int EditDrawCore() {
     mgSetPkTextureRepeat(0);
 
     if (InInterior() == 0) {
-        CT_PROFILE_ZONE("Town draw lens flare");
+        CT_DRAW_PART("Town draw lens flare");
         MainScene->DrawLensFlare(0x9D, "f_work", "f_work2");
     }
 

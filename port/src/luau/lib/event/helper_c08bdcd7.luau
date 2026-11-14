@@ -99,7 +99,13 @@ local function helper_c08bdcd7(arg0: s32)
 	event.clear_object_sequence(10)
 	event.set_object_sequence_object(10, 10)
 	var21 = vm.bits_float(event.get_triggered_event_data_2(11)) or var21
-	event.call_command(1035, 8, var17, var18, var19, var21) -- retail: the handler rejects 5 arguments
+	do
+		local out1, out2, out3, out4 = event.get_triggered_event_data_5(8)
+		var17 = out1 or var17
+		var18 = out2 or var18
+		var19 = out3 or var19
+		var21 = out4 or var21
+	end
 	var17 = vm.f32(vm.f32(vm.sin(var21) * 30.0) + var17)
 	var19 = vm.f32(vm.f32(vm.cos(var21) * 30.0) + var19)
 	angle = vm.f32(var21 - vm.f32(3.1415927))

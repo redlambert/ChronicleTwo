@@ -18,6 +18,7 @@
 #include "log/log.hpp"
 #include "platform/config.hpp"
 #include "present.hpp"
+#include "render/renderer.hpp"
 
 namespace dc2::diag {
 namespace {
@@ -81,6 +82,17 @@ struct PassTotal {
 };
 
 /**
+ * Time and draws of one draw part (CT_DRAW_PART), summed over some game frames.
+ */
+struct PartTotal {
+    double   ms = 0.0;
+    uint64_t draws = 0;
+};
+
+constexpr std::size_t kDrawParts = 48;
+using PartTotals = std::array<PartTotal, kDrawParts>;
+
+/**
  * Everything gathered while the player stays in one area.
  */
 struct AreaStats {
@@ -113,6 +125,7 @@ struct AreaStats {
     uint64_t                      game_late = 0;     // game frames that took more ticks than asked
     uint64_t                      display_short = 0; // game frames with fewer presents than ticks
     std::vector<std::pair<double, std::string>> worst; // slowest busy frames, with their detail
+    PartTotals                    parts{};           // draw parts (CT_DRAW_PART) over the area's play frames
 };
 
 /**
@@ -142,6 +155,7 @@ struct WindowStats {
     gfx::FrameTimings::Span queue_present;        // render thread handing an image to the screen
     uint64_t          flare_off_frames = 0;       // game frames that would have drawn the flare with it switched off
     std::array<double, gfx::profile::kMaxSites> other{}; // render-thread time per timing point
+    PartTotals        parts{};                    // draw parts (CT_DRAW_PART) over the window's play frames
 };
 
 constexpr std::size_t kWorstFrames = 6;
@@ -165,11 +179,84 @@ std::array<double, gfx::profile::kMaxSites>     g_zone_frame{}; // this tick's g
 Clock::time_point                               g_last_gpu_take{};
 Clock::time_point                               g_mark_since{};
 bool                                            g_mark_done = false;
+std::array<const char *, kDrawParts>            g_part_names{}; // draw part names, in the order they first ran
+std::size_t                                     g_part_count = 0;
+PartTotals                                      g_part_frame{}; // draw parts since the last play frame was counted
 
 void AddSpan(gfx::FrameTimings::Span &into, const gfx::FrameTimings::Span &from) {
     into.count += from.count;
     into.total_ms += from.total_ms;
     into.max_ms = std::max(into.max_ms, from.max_ms);
+}
+
+/**
+ * The slot of a draw part, added the first time its name is seen; the last slot takes any overflow.
+ */
+std::size_t PartSlot(const char *name) {
+    for (std::size_t slot = 0; slot < g_part_count; ++slot) {
+        if (g_part_names[slot] == name || std::strcmp(g_part_names[slot], name) == 0) {
+            return slot;
+        }
+    }
+    if (g_part_count < kDrawParts) {
+        g_part_names[g_part_count] = name;
+        return g_part_count++;
+    }
+    return kDrawParts - 1;
+}
+
+/**
+ * A draw part's name without its "Dungeon draw" or "Town draw" prefix; the whole draw reads "all".
+ */
+std::string_view PartLabel(std::size_t slot) {
+    std::string_view name = g_part_names[slot] != nullptr ? g_part_names[slot] : "?";
+    for (const std::string_view prefix : {std::string_view("Dungeon draw"), std::string_view("Town draw")}) {
+        if (name.starts_with(prefix)) {
+            name.remove_prefix(prefix.size());
+            if (name.starts_with(' ')) {
+                name.remove_prefix(1);
+            }
+            if (name.empty() || name == "recording") {
+                return "all";
+            }
+            return name;
+        }
+    }
+    return name;
+}
+
+/**
+ * Draw parts as "name ms/draws", most time first, per game frame. With per_draw, each part's cost per draw too.
+ */
+std::string PartsText(const PartTotals &totals, double frames, double min_ms, bool per_draw, int how_many) {
+    if (frames <= 0.0) {
+        return std::string();
+    }
+    std::vector<std::size_t> order;
+    for (std::size_t slot = 0; slot < g_part_count; ++slot) {
+        if (totals[slot].ms / frames >= min_ms) {
+            order.push_back(slot);
+        }
+    }
+    std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return totals[a].ms > totals[b].ms; });
+    std::string out;
+    for (std::size_t i = 0; i < order.size() && i < static_cast<std::size_t>(how_many); ++i) {
+        const PartTotal &part = totals[order[i]];
+        out += out.empty() ? "" : ", ";
+        out += std::format("{} {:.1f}/{:.0f}", PartLabel(order[i]), part.ms / frames,
+                           static_cast<double>(part.draws) / frames);
+        if (per_draw && part.draws > 0) {
+            out += std::format(" ({:.0f} us each)", 1000.0 * part.ms / static_cast<double>(part.draws));
+        }
+    }
+    return out;
+}
+
+void AddParts(PartTotals &into, const PartTotals &from) {
+    for (std::size_t slot = 0; slot < g_part_count; ++slot) {
+        into[slot].ms += from[slot].ms;
+        into[slot].draws += from[slot].draws;
+    }
 }
 
 /**
@@ -340,6 +427,12 @@ void LogWindow(Clock::time_point now) {
                     stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms,
                     stats.skipped_endpoints - g_window_present_start.skipped_endpoints);
     }
+    if (g_window.frames >= 30) {
+        const std::string parts = PartsText(g_window.parts, static_cast<double>(g_window.frames), 0.1, false, 16);
+        if (!parts.empty()) {
+            CT_LOG_INFO(Main, "diag window draw parts '{}' (ms/draws per game frame): {}", g_area.name, parts);
+        }
+    }
     g_window = WindowStats{};
     g_window.start = now;
     g_window_present_start = PresentGetStats();
@@ -430,6 +523,11 @@ void LogArea(bool is_final) {
                 Percent(g_area.display_short, g_area.frames), g_area.blend_cpu.Average(), g_area.blend_cpu.max_ms,
                 g_area.blend_prep.Average(), g_area.blend_prep.max_ms, g_area.tick_cpu.Average(), g_area.tick_cpu.max_ms,
                 g_area.intervals[0], g_area.intervals[1], g_area.intervals[2], g_area.intervals[3]);
+    const std::string parts = PartsText(g_area.parts, static_cast<double>(g_area.frames), 0.05, true, 24);
+    if (!parts.empty()) {
+        CT_LOG_INFO(Main, "diag area draw parts '{}' (ms/draws per game frame, cost per draw): {}", g_area.name,
+                    parts);
+    }
     for (std::size_t i = 0; i < g_area.worst.size(); ++i) {
         CT_LOG_INFO(Main, "diag area worst '{}' #{}: {}", g_area.name, i + 1, g_area.worst[i].second);
     }
@@ -470,8 +568,9 @@ void StartWatch(Clock::time_point now) {
     }
     g_presented_last = PresentGetStats().presented;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
-                      "frame parts v6: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
-                      "wait, sun flare and pacing recovery settings, area report every 30 s, worst frames named, town sub-zones");
+                      "frame parts v7: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
+                      "wait, sun flare and pacing recovery settings, area report every 30 s, worst frames named, draw parts "
+                      "with draw counts (dungeon and town)");
 }
 
 } // namespace
@@ -541,6 +640,18 @@ void NoteFrameParts(const FrameParts &parts) {
     g_parts_fresh = true;
 }
 
+void NoteDrawPart(const char *name, double ms, uint64_t draws) {
+    PartTotal &part = g_part_frame[PartSlot(name)];
+    part.ms += ms;
+    part.draws += draws;
+}
+
+DrawPart::DrawPart(const char *name) : name_(name), start_(Clock::now()), draws_(mgPortDrawCount()) {}
+
+DrawPart::~DrawPart() {
+    NoteDrawPart(name_, Ms(Clock::now() - start_), mgPortDrawCount() - draws_);
+}
+
 void Tick(int loop_no, std::string_view area, bool mark_held) {
     const Clock::time_point now = Clock::now();
     if (!g_started) {
@@ -562,6 +673,7 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     FollowFlareSetting();
 
     if (frame_ms >= kStall) {
+        g_part_frame = PartTotals{};
         ++g_area.stalls;
         g_area.stall_ms += frame_ms;
         g_area.worst_stall_ms = std::max(g_area.worst_stall_ms, frame_ms);
@@ -601,14 +713,19 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
             for (std::size_t i = 0; i < g_window.other.size(); ++i) {
                 g_window.other[i] += g_zone_other_frame[i];
             }
+            AddParts(g_window.parts, g_part_frame);
+            AddParts(g_area.parts, g_part_frame);
             if (late || short_display || busy > 25.0) {
+                const std::string parts = PartsText(g_part_frame, 1.0, 0.5, false, 6);
                 KeepWorst(busy, std::format("+{:.1f} s, {:.1f} ms busy = logic {:.1f} + lease wait {:.1f} + under lease "
                                             "{:.1f}; {} ticks for {}, {} presents, {:.0f} draws; game thread: {}; "
-                                            "render thread: {}",
+                                            "render thread: {}{}{}",
                                             Ms(now - g_area.start) / 1000.0, busy, p.logic_ms, p.lease_ms, p.locked_ms,
                                             p.ticks, p.frames, presents, draws, TopZonesOf(g_zone_frame, 5, 0.5, true),
-                                            TopZonesOf(g_zone_other_frame, 5, 0.5, true)));
+                                            TopZonesOf(g_zone_other_frame, 5, 0.5, true),
+                                            parts.empty() ? "" : "; draw parts (ms/draws): ", parts));
             }
+            g_part_frame = PartTotals{};
             g_parts_fresh = false;
         }
         ++g_area.frames;

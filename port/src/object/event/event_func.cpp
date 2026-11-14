@@ -6,6 +6,7 @@
 #include <libcdvd.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -17106,6 +17107,15 @@ static int _GET_EVENT_DATA(dc2::script::RunArguments stack, int argc) {
             SetStack(stack++, event_data->map_event.matrix[3][1]);
             SetStack(stack++, event_data->map_event.matrix[3][2]);
             SetStack(stack, atan2f(event_data->map_event.matrix[2][0], event_data->map_event.matrix[2][2]));
+            // Door and gimmick scenes (spider webs, key doors) aim their camera and effect here. Their scripts used to
+            // drop these values and aim at the map's origin instead (fix v1: they now read them).
+            CT_LOG_INFO_LIMIT(std::chrono::milliseconds{250}, Event,
+                              "event spot (fix v1): map event {} on map part {} at x {:.1f} y {:.1f} z {:.1f}, facing {:.2f}; "
+                              "the scene aims its camera and effect here",
+                              event_data->map_event.event_no, event_data->map_event.parts_no,
+                              event_data->map_event.matrix[3][0], event_data->map_event.matrix[3][1],
+                              event_data->map_event.matrix[3][2],
+                              atan2f(event_data->map_event.matrix[2][0], event_data->map_event.matrix[2][2]));
             break;
         case EVENT_DATA_MAP_PARTS_NO:
             SetStack(stack, event_data->map_event.parts_no);

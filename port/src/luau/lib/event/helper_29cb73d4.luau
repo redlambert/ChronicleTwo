@@ -26,7 +26,13 @@ local function helper_29cb73d4()
 		pos_z = out3 or pos_z
 	end
 	event.open_minimap_door(pos_x, pos_y, pos_z)
-	event.call_command(1035, 8, position_x, var6, position_z, var8) -- retail: the handler rejects 5 arguments
+	do
+		local out1, out2, out3, out4 = event.get_triggered_event_data_5(8)
+		position_x = out1 or position_x
+		var6 = out2 or var6
+		position_z = out3 or position_z
+		var8 = out4 or var8
+	end
 	var8 = vm.bits_float(event.get_triggered_event_data_2(11)) or var8
 	var8 = vm.f32(var8 - vm.f32(3.1415927))
 	var8 = event.wrap_angle(var8) or var8

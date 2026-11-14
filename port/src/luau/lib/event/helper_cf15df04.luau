@@ -16,7 +16,13 @@ local function helper_cf15df04()
 	var8 = event.get_sound_id(1) or var8
 	var7 = event.get_triggered_event_data_2(3) or var7
 	event.get_triggered_event_data_2(4)
-	event.call_command(1035, 8, world_coord_pos, world_coord_pos_2, world_coord_pos_3, world_coord_rot) -- retail: the handler rejects 5 arguments
+	do
+		local out1, out2, out3, out4 = event.get_triggered_event_data_5(8)
+		world_coord_pos = out1 or world_coord_pos
+		world_coord_pos_2 = out2 or world_coord_pos_2
+		world_coord_pos_3 = out3 or world_coord_pos_3
+		world_coord_rot = out4 or world_coord_rot
+	end
 	event.set_event_world_coordinate(world_coord_pos, world_coord_pos_2, world_coord_pos_3, world_coord_rot)
 	if vm.imod(var7, 2) ~= 1 then
 		world_coord_rot = vm.f32(-3.1415927)
