@@ -689,6 +689,9 @@ int CScene::LoadVillager(int map_no, int texb) {
 
     if (skip_load_villager != 0) {
         skip_load_villager = 0;
+        // Upstream fix (ChronicleTwo bcd19672, #190): the edit loop borrows its sub data from the villager stack, so
+        // it still needs binding to the new map. Without it, leaving Steve's battle stage aborts in EditInit.
+        AssignStack(SCENE_STACK_VILLAGER);
         return 0;
     }
 

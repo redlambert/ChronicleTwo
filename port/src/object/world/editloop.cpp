@@ -510,6 +510,10 @@ void dc2::world::PrepareEditMapJumpStorage(CScene &scene, DataPacketMode mode) {
     scene.DeleteVillager();
     scene.DeleteSubVillager();
     DeleteMapJumpMaps(scene);
+    // Upstream fix (ChronicleTwo bcd19672): retire what the main data stack holds while it is still live, so the
+    // fork's extension-pack release can detach cutscene animations from their characters instead of dropping the
+    // characters once the rebind below invalidates the stack.
+    scene.ClearStack(1);
     ConfigureDataPackets(mode);
     ControlCharaBuff.stSetLocked(true);
     MainDataBuff.stSetBorrowedBuffer(ControlCharaBuff,

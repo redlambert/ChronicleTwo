@@ -13,6 +13,7 @@
 #include "dataread.hpp"
 #include "funcpoint.hpp"
 #include "log/game_output.hpp"
+#include "profile.hpp"
 #include "map.hpp"
 #include "mapinfo.hpp"
 #include "mapload.hpp"
@@ -749,6 +750,8 @@ int CMap::GetBBox(mgVu0FBOX *out_box) {
 }
 
 int CMap::PreDraw(float *view_pos) {
+    // Diagnostic split of the "draw map parts" time: culling here, drawing in DrawSub.
+    CT_PROFILE_ZONE("Map cull parts");
     CMapParts          *parts = {};
     MapDrawOffRect     *rect = {};
     CList<CMapParts *> *rect_entry = {};
@@ -1002,6 +1005,7 @@ void CMap::ResetFuncPLight(int num) {
 }
 
 int CMap::DrawSub(int direct) {
+    CT_PROFILE_ZONE("Map draw parts");
     int             plight_enable = mgGetPlightEnable();
     int             lighting = mgActiveLighting(2, 1);
     CFuncPointCheck check;
