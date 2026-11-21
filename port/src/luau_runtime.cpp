@@ -901,6 +901,13 @@ public:
         if (!root) {
             return;
         }
+        // With scripts/scripts.pack present, every script loads from the pack and the loose files beside it are
+        // ignored, so walking them would only compete with the game's own SD card reads (20-30x slower area loads).
+        std::error_code pack_error;
+        if (std::filesystem::exists(*root / "scripts.pack", pack_error)) {
+            CT_LOG_INFO(Script, "luau: script prefetch off (scripts.pack is in use)");
+            return;
+        }
         reader = std::jthread([this, scripts = *root](const std::stop_token &stop) { Read(stop, scripts); });
     }
 
