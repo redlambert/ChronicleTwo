@@ -337,7 +337,11 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
     static bool logged_third_targets = false;
     if (!logged_third_targets) {
         logged_third_targets = true;
-        CT_LOG_INFO(Gfx, "lens flare: third-size work targets ({}x{}), fix v1", third_w, third_h);
+        CT_LOG_INFO(
+            Gfx,
+            "lens flare: third-size work targets ({}x{}), fix v1",
+            static_cast<uint32_t>(mgScreenWidth / 3 + 2),
+            static_cast<uint32_t>(mgScreenHeight / 3 + 2));
     }
 
     const mgPortExtent extent = mgPortVisibleExtent();
