@@ -552,7 +552,9 @@ TEST_F(LuauRuntime, RunWaitResumeEnd) {
 TEST_F(LuauRuntime, MonsterWithoutStunProgramResumesSuspendedBehaviorAfterStun) {
     auto        monster_owner = std::make_shared<CActiveMonster>();
     auto       &monster = *monster_owner;
-    CMonsterMan manager{};
+    // The manager outgrows an AddressSanitizer stack frame, so it lives on the heap.
+    const auto  manager_owner = std::make_unique<CMonsterMan>();
+    auto       &manager = *manager_owner;
     CScene      scene{};
     scene.chara_num = DNG_CHARA_SLOT_MONSTER_END;
     ASSERT_EQ(scene.AssignChara(DNG_CHARA_SLOT_MONSTER, dc2::scene::CharacterResource::FromOwned(monster_owner)), DNG_CHARA_SLOT_MONSTER);

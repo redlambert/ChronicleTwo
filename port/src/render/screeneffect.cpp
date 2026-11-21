@@ -280,6 +280,30 @@ float FlareDistance(const LensFlareSun &sun) {
     return std::sqrt(dx * dx + dy * dy);
 }
 
+// Only the occlusion plate needs the full frame and the main depth. Everything after it works in the frame's
+// top-left third, so it gets third-size targets: every pass then loads and stores a ninth of the pixels, and
+// linear samples at the third's right and bottom edges read the cleared margin instead of the full-size plate
+// beside it (which showed as a stripe down the screen's right edge).
+struct LensFlareTargetSet {
+    gfx::TextureHandle plate;
+    gfx::TextureHandle first;
+    gfx::TextureHandle second;
+    gfx::TextureHandle mask;
+};
+
+LensFlareTargetSet LensFlareTargets() {
+    const auto frame_w = static_cast<uint32_t>(mgScreenWidth);
+    const auto frame_h = static_cast<uint32_t>(mgScreenHeight);
+    const auto third_w = static_cast<uint32_t>(mgScreenWidth / 3 + 2);
+    const auto third_h = static_cast<uint32_t>(mgScreenHeight / 3 + 2);
+    return {
+        gfx::NamedRenderTarget("lens flare a", frame_w, frame_h, true, true),
+        gfx::NamedRenderTarget("lens flare third a", third_w, third_h, true, false),
+        gfx::NamedRenderTarget("lens flare third b", third_w, third_h, true, false),
+        gfx::NamedRenderTarget("lens flare third mask", third_w, third_h, true, false),
+    };
+}
+
 } // namespace
 
 LensFlareSun LensFlareSunOf(const int screen[4]) {
@@ -302,19 +326,8 @@ void LensFlareDraw(const LensFlareSun &sun, const float colour[4], const LensFla
     }
 
     // Shares the main depth: the occlusion plate is tested against the scene exactly as on the GS.
-    const auto               frame_w = static_cast<uint32_t>(mgScreenWidth);
-    const auto               frame_h = static_cast<uint32_t>(mgScreenHeight);
     const gfx::TextureHandle entry = mgPortCurrentTarget();
-    // Only the occlusion plate needs the full frame and the main depth. Everything after it works in the frame's
-    // top-left third, so it gets third-size targets: every pass then loads and stores a ninth of the pixels, and
-    // linear samples at the third's right and bottom edges read the cleared margin instead of the full-size plate
-    // beside it (which showed as a stripe down the screen's right edge).
-    const auto               third_w = static_cast<uint32_t>(mgScreenWidth / 3 + 2);
-    const auto               third_h = static_cast<uint32_t>(mgScreenHeight / 3 + 2);
-    const gfx::TextureHandle plate_target = gfx::NamedRenderTarget("lens flare a", frame_w, frame_h, true, true);
-    const gfx::TextureHandle first = gfx::NamedRenderTarget("lens flare third a", third_w, third_h, true, false);
-    const gfx::TextureHandle second = gfx::NamedRenderTarget("lens flare third b", third_w, third_h, true, false);
-    const gfx::TextureHandle mask = gfx::NamedRenderTarget("lens flare third mask", third_w, third_h, true, false);
+    const auto [plate_target, first, second, mask] = LensFlareTargets();
 
     if (plate_target == gfx::kNullTexture || first == gfx::kNullTexture || second == gfx::kNullTexture ||
         mask == gfx::kNullTexture) {
@@ -488,4 +501,10 @@ void LensFlare(sceVu0IVECTOR screen, sceVu0FVECTOR color, int bank, char *textur
     source.second_alpha = second->tex0.bits.tcc != 0;
     std::memcpy(&source.tex1, &sampled.tex1, sizeof source.tex1);
     LensFlareDraw(sun, color, source);
+}
+
+void PrewarmLensFlareTargets() {
+    if (mgPortRendererReady()) {
+        LensFlareTargets();
+    }
 }
