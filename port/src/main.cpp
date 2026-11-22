@@ -401,20 +401,25 @@ int Run(int argc, const char **argv) {
     // The log remains available until every host service has stopped.
     std::atexit(LogShutdown);
     LogSessionHeader();
-    // Frame watch (diag/recorder.cpp): the renderer's own tick-frame replay timings, by draw kind and by phase. The
-    // renderer reads these once, before its first frame, and logs them every 120 tick frames.
+    // Frame watch (diag/recorder.cpp), only with --env DC2_DIAG=1: the renderer's own tick-frame replay timings, by
+    // draw kind and by phase. The renderer reads these once, before its first frame, and logs them every 120 tick
+    // frames. They cost the render thread time each frame, so normal play leaves them off.
+    if (const char *diag = std::getenv("DC2_DIAG"); diag != nullptr && std::string_view(diag) == "1") {
 #ifdef _WIN32
-    if (std::getenv("KZ_PERF_REPLAY_BUCKETS") == nullptr) {
-        _putenv_s("KZ_PERF_REPLAY_BUCKETS", "1");
-    }
-    if (std::getenv("KZ_PERF_REPLAY_PHASES") == nullptr) {
-        _putenv_s("KZ_PERF_REPLAY_PHASES", "1");
-    }
+        if (std::getenv("KZ_PERF_REPLAY_BUCKETS") == nullptr) {
+            _putenv_s("KZ_PERF_REPLAY_BUCKETS", "1");
+        }
+        if (std::getenv("KZ_PERF_REPLAY_PHASES") == nullptr) {
+            _putenv_s("KZ_PERF_REPLAY_PHASES", "1");
+        }
 #else
-    setenv("KZ_PERF_REPLAY_BUCKETS", "1", 0);
-    setenv("KZ_PERF_REPLAY_PHASES", "1", 0);
+        setenv("KZ_PERF_REPLAY_BUCKETS", "1", 0);
+        setenv("KZ_PERF_REPLAY_PHASES", "1", 0);
 #endif
-    CT_LOG_INFO(Main, "diag: renderer tick-frame replay timings on (replay buckets and phases, every 120 tick frames)");
+        CT_LOG_INFO(Main, "diag: renderer tick-frame replay timings on (replay buckets and phases, every 120 tick frames)");
+    } else {
+        CT_LOG_INFO(Main, "diag: frame watch off (add --env DC2_DIAG=1 to args.txt to turn it on)");
+    }
 
     CrashInit({.headless = options.headless || options.frames > 0 || !options.input.empty()});
     const char              *crash_test_text = options.crash_test ? options.crash_test : SettingsEnv("CRASH_TEST");

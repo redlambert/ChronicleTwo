@@ -548,6 +548,19 @@ void LogArea(bool is_final) {
     }
 }
 
+/**
+ * Whether the frame watch runs: only with --env DC2_DIAG=1 in args.txt. Its timing (graphics-chip timestamps on
+ * every pass, every profile zone sampled, renderer replay timings) costs the game and render threads time each
+ * frame, so normal play leaves it off. The flight recorder's notes stay on either way.
+ */
+bool WatchWanted() {
+    static const bool wanted = [] {
+        const char *value = std::getenv("DC2_DIAG");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    return wanted;
+}
+
 void StartArea(std::string_view name, Clock::time_point now) {
     g_area = AreaStats{};
     g_area.name = std::string(name);
@@ -652,6 +665,9 @@ void FollowFlareSetting() {
 }
 
 void NoteFrameParts(const FrameParts &parts) {
+    if (!WatchWanted()) {
+        return;
+    }
     g_parts = parts;
     g_parts_fresh = true;
 }
@@ -662,13 +678,25 @@ void NoteDrawPart(const char *name, double ms, uint64_t draws) {
     part.draws += draws;
 }
 
-DrawPart::DrawPart(const char *name) : name_(name), start_(Clock::now()), draws_(mgPortDrawCount()) {}
+DrawPart::DrawPart(const char *name) : name_(WatchWanted() ? name : nullptr) {
+    if (name_ != nullptr) {
+        start_ = Clock::now();
+        draws_ = mgPortDrawCount();
+    }
+}
 
 DrawPart::~DrawPart() {
-    NoteDrawPart(name_, Ms(Clock::now() - start_), mgPortDrawCount() - draws_);
+    if (name_ != nullptr) {
+        NoteDrawPart(name_, Ms(Clock::now() - start_), mgPortDrawCount() - draws_);
+    }
 }
 
 void Tick(int loop_no, std::string_view area, bool mark_held) {
+    if (!WatchWanted()) {
+        // The Display settings this follows (sun flare, screen wait overlap) still apply without the frame watch.
+        FollowFlareSetting();
+        return;
+    }
     const Clock::time_point now = Clock::now();
     if (!g_started) {
         StartWatch(now);

@@ -86,7 +86,7 @@ public:
 private:
     const char                           *name_;
     std::chrono::steady_clock::time_point start_;
-    uint64_t                              draws_;
+    uint64_t                              draws_ = 0;
 };
 
 /**
