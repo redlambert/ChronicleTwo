@@ -14,3 +14,14 @@ changed and redo these changes on the new versions.
   fewer held frames, occlusion pre-pass on by default for the Switch, first-effect setup)
 - Screen wait overlap (fix v1): a light render lease may run while the renderer waits for the screen's refresh
   (`include/gfx/gfx.hpp`, `include/gfx/context.hpp`, `src/cpp/gfx/thread.cpp`, `src/cpp/gfx/renderer.cpp`)
+- Copy and blit work (the big Kazarov project, part 1), all on the render thread's side of each grab and blit:
+  - Native blits: a scaled colour blit is drawn with a small pipeline of its own (`blit.vert`, `blit.frag`) instead
+    of `vkCmdBlitImage`, which NVK runs as a heavy meta draw. Same pixels, mirroring included; `KZ_NATIVE_BLIT=0`
+    turns it off. The display image now has a bindless slot (3) so it can be blitted from; textures start at 4
+    (`include/gfx/context.hpp`, `src/cpp/gfx/draw.cpp`, `src/cpp/gfx/pipelines.cpp`, `src/cpp/gfx/renderer.cpp`)
+  - Scratch image pool: a copy within one image reuses its scratch image instead of creating and freeing one every
+    time (`src/cpp/gfx/draw.cpp`)
+  - Copy timing: with `KZ_PERF_LOG=1`, a "timing copies" line each second gives the count and render-thread time of
+    copies, driver blits, native blits, self-copies and depth copies (`src/cpp/gfx/draw.cpp`,
+    `src/cpp/gfx/renderer.cpp`)
+  - Tests: `src/cpp/tests/gfx_native_blit_test.cpp` checks native blits against driver blits

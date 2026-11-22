@@ -173,7 +173,10 @@ inline constexpr uint32_t kAnisotropyLevels = 4;
 inline constexpr uint32_t kSamplerCount = kBaseSamplerCount + kAnisotropyLevels * 4;
 inline constexpr uint32_t kMaxMeshes = 65535;
 inline constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
-inline constexpr uint32_t kFirstUserSlot = 3;
+// Slot 0 is the null texture, 1 and 2 the two main colour images, 3 the display image (so a display render's
+// grabs can sample it, see NativeBlit); textures take the rest.
+inline constexpr uint32_t kDisplaySlot = 3;
+inline constexpr uint32_t kFirstUserSlot = 4;
 
 [[noreturn]] void Fatal(const char *format, ...) __attribute__((format(printf, 1, 2)));
 void              Error(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -1078,6 +1081,7 @@ struct Context {
     uint32_t                 pipeline_count = 0;
     // KZ_DEPTH_PLANES: the depth-bounds colour pass; null when off, unsupported or unbindless.
     VkPipeline                    depth_planes_pipeline = VK_NULL_HANDLE;
+    VkPipeline                    blit_pipeline = VK_NULL_HANDLE; // NativeBlit: colour blits drawn, not vkCmdBlitImage
     bool                          depth_bounds = false; // the device's depthBounds feature is enabled
     bool                          depth_blit = false;   // the depth format blits as source and destination
     PlaneTable                    plane_table;
@@ -1336,6 +1340,11 @@ void DestroyDoomedMesh(MeshHandle handle);
 // pipelines.cpp
 void CreatePipelineLayout();
 bool DepthPlanesEnabled();
+// Colour blits as draws (NativeBlit) instead of vkCmdBlitImage: on unless KZ_NATIVE_BLIT=0. Tests can switch it.
+bool NativeBlitWanted();
+// Logs and resets the copy and blit counts by kind (the "timing copies" line of KZ_PERF_LOG=1).
+void LogCopyTimings();
+void SetNativeBlitForTest(bool enabled);
 void CreatePipelines();
 void DestroyPipelines();
 /**

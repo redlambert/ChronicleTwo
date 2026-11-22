@@ -25,6 +25,15 @@ enum class ConfigHaptics {
     Full,      // Also camera quakes and the effects of the player, battles and monsters.
 };
 
+// video.screen_wait_overlap: whether the game may hand over its next frame while the renderer waits for the
+// screen's refresh (Kazarov gfx::SetScreenWaitOverlap). Auto turns it on in dungeons, where it keeps the game
+// at a steady pace, and off elsewhere, where waiting for the renderer is smoother.
+enum class ConfigScreenWaitOverlap {
+    Off,
+    On,
+    Auto,
+};
+
 // video.render_thread: which thread runs device work. The environment (DC2_RENDER_THREAD, KZ_RENDER_THREAD)
 // overrides it, and headless and screenshot runs always use off.
 enum class ConfigRenderThread {
@@ -50,9 +59,8 @@ struct Config : HostSettings {
     bool               interpolation = kConfigInterpolationDefault;
     // video.lens_flare: draws the sun's lens flare in towns and dungeons when the sun is in view.
     bool lens_flare = true;
-    // video.screen_wait_overlap: lets the game hand over its next frame while the renderer waits for the screen's
-    // refresh, instead of waiting for the renderer (Kazarov gfx::SetScreenWaitOverlap).
-    bool screen_wait_overlap = true;
+    // video.screen_wait_overlap: see ConfigScreenWaitOverlap.
+    ConfigScreenWaitOverlap screen_wait_overlap = ConfigScreenWaitOverlap::Auto;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;

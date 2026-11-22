@@ -3975,11 +3975,15 @@ void CreateMainTargets() {
         std::fprintf(stderr, "perf init: main targets cleared\n");
     }
 
-    VkDescriptorImageInfo images[2];
+    // The two main colour images, then the display image at kDisplaySlot (the slot after them).
+    static_assert(kDisplaySlot == kMainTarget + 2);
+    VkDescriptorImageInfo images[3];
     for (uint32_t i = 0; i < 2; i++) {
         images[i] = {VK_NULL_HANDLE, g.main_color[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         g.texture_views[kMainTarget + i] = g.main_color[i].view;
     }
+    images[2] = {VK_NULL_HANDLE, g.display_color.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    g.texture_views[kDisplaySlot] = g.display_color.view;
     if (!g.bindless) {
         return;
     }
@@ -3988,7 +3992,7 @@ void CreateMainTargets() {
     write.dstSet = g.texture_set;
     write.dstBinding = 0;
     write.dstArrayElement = kMainTarget;
-    write.descriptorCount = 2;
+    write.descriptorCount = 3;
     write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     write.pImageInfo = images;
     vkUpdateDescriptorSets(g.device, 1, &write, 0, nullptr);
@@ -5157,7 +5161,7 @@ void LogFrameTimings(double elapsed_seconds) {
         kz::Logf(kz::LogLevel::Info, "gfx", "timing scope {} count={} gpu={:.3f}/{:.3f} total_ms={:.3f} draws={} barriers={}",
                  scope.name, scope.span.count, scope.span.Average(), scope.span.max_ms, scope.span.total_ms,
                  scope.draws, scope.barriers);
-    }
+    }    LogCopyTimings();
 }
 
 RendererFeatures ActiveRendererFeatures() {

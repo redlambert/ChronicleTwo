@@ -648,18 +648,23 @@ bool LensFlareEnabled() {
     return g_flare_enabled;
 }
 
-void FollowFlareSetting() {
+void FollowFlareSetting(std::string_view area) {
     const bool enabled = ConfigGet().lens_flare;
     if (enabled != g_flare_enabled) {
         g_flare_enabled = enabled;
         CT_LOG_INFO(Main, "diag: sun flare setting {} (Display settings)", enabled ? "on" : "off");
         Notef("flare", "setting {}", enabled ? "on" : "off");
     }
-    const bool overlap = ConfigGet().screen_wait_overlap;
+    // Auto: on in dungeons, where it holds the game's pace, off in towns and everywhere else.
+    const ConfigScreenWaitOverlap mode = ConfigGet().screen_wait_overlap;
+    const bool overlap = mode == ConfigScreenWaitOverlap::On ||
+                         (mode == ConfigScreenWaitOverlap::Auto && area.starts_with("dungeon"));
     gfx::SetScreenWaitOverlap(overlap);
     if (overlap != g_screen_wait_overlap) {
         g_screen_wait_overlap = overlap;
-        CT_LOG_INFO(Main, "diag: screen wait overlap setting {} (Display settings)", overlap ? "on" : "off");
+        CT_LOG_INFO(Main, "diag: screen wait overlap {} ({} in Display settings, area '{}')", overlap ? "on" : "off",
+                    mode == ConfigScreenWaitOverlap::Auto ? "auto" : mode == ConfigScreenWaitOverlap::On ? "on" : "off",
+                    area);
         Notef("overlap", "screen wait overlap {}", overlap ? "on" : "off");
     }
 }
@@ -694,7 +699,7 @@ DrawPart::~DrawPart() {
 void Tick(int loop_no, std::string_view area, bool mark_held) {
     if (!WatchWanted()) {
         // The Display settings this follows (sun flare, screen wait overlap) still apply without the frame watch.
-        FollowFlareSetting();
+        FollowFlareSetting(area);
         return;
     }
     const Clock::time_point now = Clock::now();
@@ -714,7 +719,7 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     g_presented_last = presented;
     const bool flare = g_flare_this_frame;
     g_flare_this_frame = false;
-    FollowFlareSetting();
+    FollowFlareSetting(area);
 
     if (frame_ms >= kStall) {
         g_part_frame = PartTotals{};

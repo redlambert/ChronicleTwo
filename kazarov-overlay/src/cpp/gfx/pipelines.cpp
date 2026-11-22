@@ -21,6 +21,8 @@
 #include "kazarov/log.hpp"
 #include "platform/files.hpp"
 #include "platform/paths.hpp"
+#include "shaders/blit.frag.spv.hpp"
+#include "shaders/blit.vert.spv.hpp"
 #include "shaders/depth_planes.frag.spv.hpp"
 #include "shaders/draw.frag.spv.hpp"
 #include "shaders/draw2d.vert.spv.hpp"
@@ -581,6 +583,26 @@ void CreatePipelineLayout() {
     info.pushConstantRangeCount = 1;
     info.pPushConstantRanges = &push;
     Check(vkCreatePipelineLayout(g.device, &info, nullptr, &g.pipeline_layout), "vkCreatePipelineLayout");
+}
+
+namespace {
+// -1 follows KZ_NATIVE_BLIT, 0 and 1 are a test's choice.
+int native_blit_override = -1;
+} // namespace
+
+bool NativeBlitWanted() {
+    if (native_blit_override >= 0) {
+        return native_blit_override == 1;
+    }
+    static const bool wanted = [] {
+        const char *value = std::getenv("KZ_NATIVE_BLIT");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    return wanted;
+}
+
+void SetNativeBlitForTest(bool enabled) {
+    native_blit_override = enabled ? 1 : 0;
 }
 
 // KZ_DEPTH_PLANES=1 builds the depth-bounds colour pass for DrawDepthPlanes2D. Read at each renderer start.
@@ -1388,6 +1410,91 @@ void CreatePipelines() {
         }
         vkDestroyShaderModule(g.device, planes_module, nullptr);
     }
+    // NativeBlit's pipeline: a colour blit drawn into the destination alone (no depth attachment), so a scaled
+    // grab costs one draw instead of the driver's own blit, which on NVK is a meta draw that saves and restores
+    // every piece of state around itself. No vertex input (blit.vert places a strip on the viewport), no blend,
+    // every channel written; only the viewport and the scissor are dynamic.
+    if (g.bindless && NativeBlitWanted()) {
+        VkShaderModule                  blit_vertex = CreateShader(blit_vert, sizeof(blit_vert));
+        VkShaderModule                  blit_fragment = CreateShader(blit_frag, sizeof(blit_frag));
+        VkPipelineShaderStageCreateInfo blit_stages[2] = {};
+        blit_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        blit_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        blit_stages[0].module = blit_vertex;
+        blit_stages[0].pName = "main";
+        blit_stages[1] = blit_stages[0];
+        blit_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        blit_stages[1].module = blit_fragment;
+
+        VkPipelineVertexInputStateCreateInfo blit_vertex_input = {};
+        blit_vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo blit_strip = {};
+        blit_strip.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        blit_strip.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+
+        VkPipelineViewportStateCreateInfo blit_viewport = {};
+        blit_viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        blit_viewport.viewportCount = 1;
+        blit_viewport.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo blit_raster = {};
+        blit_raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        blit_raster.polygonMode = VK_POLYGON_MODE_FILL;
+        blit_raster.cullMode = VK_CULL_MODE_NONE;
+        blit_raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        blit_raster.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo blit_multisample = {};
+        blit_multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        blit_multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo blit_depth = {};
+        blit_depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+        VkPipelineColorBlendAttachmentState blit_attachment = {};
+        blit_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo blit_blend = {};
+        blit_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blit_blend.attachmentCount = 1;
+        blit_blend.pAttachments = &blit_attachment;
+
+        const VkDynamicState             blit_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo blit_dynamic = {};
+        blit_dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        blit_dynamic.dynamicStateCount = 2;
+        blit_dynamic.pDynamicStates = blit_states;
+
+        const VkFormat                blit_format = kColorFormat;
+        VkPipelineRenderingCreateInfo blit_rendering = {};
+        blit_rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        blit_rendering.colorAttachmentCount = 1;
+        blit_rendering.pColorAttachmentFormats = &blit_format;
+
+        VkGraphicsPipelineCreateInfo blit = {};
+        blit.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        blit.pNext = &blit_rendering;
+        blit.stageCount = 2;
+        blit.pStages = blit_stages;
+        blit.pVertexInputState = &blit_vertex_input;
+        blit.pInputAssemblyState = &blit_strip;
+        blit.pViewportState = &blit_viewport;
+        blit.pRasterizationState = &blit_raster;
+        blit.pMultisampleState = &blit_multisample;
+        blit.pDepthStencilState = &blit_depth;
+        blit.pColorBlendState = &blit_blend;
+        blit.pDynamicState = &blit_dynamic;
+        blit.layout = g.pipeline_layout;
+        VkResult result = create_pipeline(blit, g.blit_pipeline);
+        if (result != VK_SUCCESS) {
+            g.blit_pipeline = VK_NULL_HANDLE;
+            kz::Logf(kz::LogLevel::Info, "gfx", "KZ_NATIVE_BLIT: the blit pipeline failed ({}); blits stay with the driver",
+                     static_cast<int>(result));
+        }
+        vkDestroyShaderModule(g.device, blit_vertex, nullptr);
+        vkDestroyShaderModule(g.device, blit_fragment, nullptr);
+    }
     if (!g.perf.stats.empty()) {
         LogShaderStats();
     }
@@ -1522,6 +1629,10 @@ void DestroyPipelines() {
     if (g.depth_planes_pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(g.device, g.depth_planes_pipeline, nullptr);
         g.depth_planes_pipeline = VK_NULL_HANDLE;
+    }
+    if (g.blit_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g.device, g.blit_pipeline, nullptr);
+        g.blit_pipeline = VK_NULL_HANDLE;
     }
     if (g.pipeline_cache != VK_NULL_HANDLE) {
         vkDestroyPipelineCache(g.device, g.pipeline_cache, nullptr);

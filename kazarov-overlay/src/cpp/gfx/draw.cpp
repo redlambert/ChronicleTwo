@@ -1,13 +1,17 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <map>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "gfx/alpha_trace.hpp"
 #include "gfx/context.hpp"
@@ -1587,6 +1591,115 @@ void MarkUsed(Texture *texture) {
     }
 }
 
+/**
+ * Scratch images for copies within one image, kept from frame to frame.
+ *
+ * Each self-copy used to create a scratch image and free it after the frame. On the Switch every creation is a fresh
+ * device allocation, so a self-copy cost far more than its copy. A scratch image is only ever used through Transition,
+ * whose barriers order it against its earlier uses on the queue, so reusing it is safe; an image unused for a while is
+ * freed after the frames that may still read it.
+ */
+struct ScratchImage {
+    Image    image;
+    uint64_t last_use = 0;
+};
+
+std::vector<ScratchImage> g_scratch_images;
+
+constexpr uint64_t kScratchIdleFrames = 600;
+constexpr size_t   kScratchPoolLimit = 8;
+
+Image &AcquireScratch(uint32_t width, uint32_t height, VkFormat format) {
+    for (auto it = g_scratch_images.begin(); it != g_scratch_images.end();) {
+        if (g.frame_serial > it->last_use + kScratchIdleFrames) {
+            DeferDestroy([image = it->image]() mutable { DestroyImage(image); });
+            it = g_scratch_images.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (ScratchImage &scratch : g_scratch_images) {
+        if (scratch.image.width == width && scratch.image.height == height && scratch.image.format == format) {
+            scratch.last_use = g.frame_serial;
+            return scratch.image;
+        }
+    }
+    if (g_scratch_images.size() >= kScratchPoolLimit) {
+        // The least recently used one makes room.
+        auto oldest = std::min_element(g_scratch_images.begin(), g_scratch_images.end(),
+                                       [](const ScratchImage &a, const ScratchImage &b) {
+                                           return a.last_use < b.last_use;
+                                       });
+        DeferDestroy([image = oldest->image]() mutable { DestroyImage(image); });
+        g_scratch_images.erase(oldest);
+    }
+    ScratchImage scratch;
+    scratch.image = CreateImage(width, height, 1, format,
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                    VK_IMAGE_USAGE_SAMPLED_BIT);
+    scratch.last_use = g.frame_serial;
+    g_scratch_images.push_back(scratch);
+    return g_scratch_images.back().image;
+}
+
+/**
+ * Copy and blit counts and render-thread time by kind, for the once-a-second timing report (KZ_PERF_LOG=1).
+ */
+enum class CopyKind : size_t {
+    Copy,        // same-size copy (vkCmdCopyImage)
+    DriverBlit,  // scaled blit by the driver (vkCmdBlitImage)
+    NativeBlit,  // scaled blit drawn by NativeBlit
+    SelfCopy,    // copy within one image, through a scratch image
+    DepthCopy,   // CopyMainDepthToTarget
+    Count,
+};
+
+struct CopyStats {
+    std::array<std::atomic<uint64_t>, static_cast<size_t>(CopyKind::Count)> count{};
+    std::array<std::atomic<uint64_t>, static_cast<size_t>(CopyKind::Count)> ns{};
+};
+
+CopyStats g_copy_stats;
+
+/**
+ * Times one copy or blit for the timing report when it is on.
+ */
+class CopyTimer {
+public:
+    CopyTimer() : timing_(FrameTimingEnabled()) {
+        if (timing_) {
+            start_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    void Finish(CopyKind kind) {
+        const size_t index = static_cast<size_t>(kind);
+        g_copy_stats.count[index].fetch_add(1, std::memory_order_relaxed);
+        if (timing_) {
+            const auto elapsed = std::chrono::steady_clock::now() - start_;
+            g_copy_stats.ns[index].fetch_add(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+                std::memory_order_relaxed);
+        }
+    }
+
+private:
+    bool                                  timing_ = false;
+    std::chrono::steady_clock::time_point start_;
+};
+
+CopyKind TransferKind(const Image &src, const VkOffset3D src_offsets[2], const Image &dst,
+                      const VkOffset3D dst_offsets[2]) {
+    if (&src == &dst) {
+        return CopyKind::SelfCopy;
+    }
+    const bool same_size = std::abs(src_offsets[1].x - src_offsets[0].x) == std::abs(dst_offsets[1].x - dst_offsets[0].x) &&
+                           std::abs(src_offsets[1].y - src_offsets[0].y) == std::abs(dst_offsets[1].y - dst_offsets[0].y) &&
+                           src_offsets[1].x > src_offsets[0].x && src_offsets[1].y > src_offsets[0].y &&
+                           dst_offsets[1].x > dst_offsets[0].x && dst_offsets[1].y > dst_offsets[0].y;
+    return same_size ? CopyKind::Copy : CopyKind::DriverBlit;
+}
+
 // A copy or blit from src to dst, through a scratch image when both are one image, since
 // Vulkan copies within an image need GENERAL layout and must not overlap.
 void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], Image &dst,
@@ -1597,10 +1710,8 @@ void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], 
     auto height = [](const VkOffset3D o[2]) { return std::abs(o[1].y - o[0].y); };
 
     if (&src == &dst) {
-        Image      scratch = CreateImage(static_cast<uint32_t>(width(src_offsets)),
-                                         static_cast<uint32_t>(height(src_offsets)), 1, src.format,
-                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                             VK_IMAGE_USAGE_SAMPLED_BIT);
+        Image &scratch = AcquireScratch(static_cast<uint32_t>(width(src_offsets)),
+                                        static_cast<uint32_t>(height(src_offsets)), src.format);
         VkOffset3D whole[2] = {
             {0,                                   0,                                    0},
             {static_cast<int32_t>(scratch.width), static_cast<int32_t>(scratch.height), 1}
@@ -1619,7 +1730,6 @@ void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], 
             std::swap(back[0].y, back[1].y);
         }
         Transfer(cmd, scratch, back, dst, dst_offsets, filter);
-        DeferDestroy([scratch]() mutable { DestroyImage(scratch); });
         return;
     }
 
@@ -1663,7 +1773,135 @@ void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], 
     MarkGpuScope(cmd, GpuScopeKind::Copy, dst.width << 16 | dst.height);
 }
 
+// The bindless slot that samples image, or 0 when it has none: a texture's own slot, the two main colour images'
+// and the display image's reserved ones.
+uint32_t SampleSlotOf(const Image &image, const Texture *texture) {
+    if (texture != nullptr) {
+        return &texture->image == &image ? static_cast<uint32_t>(texture - g.textures.data()) : 0;
+    }
+    if (&image == &g.main_color[0]) {
+        return kMainTarget;
+    }
+    if (&image == &g.main_color[1]) {
+        return kMainTarget + 1;
+    }
+    if (&image == &g.display_color) {
+        return kDisplaySlot;
+    }
+    return 0;
+}
+
+/**
+ * A scaled colour blit drawn with the blit pipeline instead of vkCmdBlitImage, or false to leave it to Transfer.
+ *
+ * NVK runs vkCmdBlitImage as a meta draw that saves and restores all graphics state and makes image views around
+ * itself, which costs the render thread far more than the draw. The result is the same: each destination pixel
+ * centre is mapped back to the source rectangle and sampled there, nearest or bilinear, clamped to the image's edge,
+ * mirrored when either rectangle runs backwards; every channel is written, nothing is blended, and pixels outside
+ * the destination rectangle keep what they held.
+ *
+ * Only for a destination that can be drawn into (the main and display images, a render target's colour) with one
+ * mip, a source with a bindless slot, both in the colour format, and a scaled blit: a same-size one stays a copy.
+ */
+bool NativeBlit(VkCommandBuffer cmd, Image &src, const Texture *src_texture, const VkOffset3D src_offsets[2],
+                Image &dst, const Texture *dst_texture, const VkOffset3D dst_offsets[2], VkFilter filter) {
+    if (!g.bindless || g.blit_pipeline == VK_NULL_HANDLE || !NativeBlitWanted() || &src == &dst ||
+        src.format != kColorFormat || dst.format != kColorFormat || dst.mips != 1 || src.view == VK_NULL_HANDLE ||
+        dst.view == VK_NULL_HANDLE || AttachmentAlphaIdentityReady() || AttachmentAlphaTraceRecording()) {
+        return false;
+    }
+    if (dst_texture != nullptr && (!dst_texture->render_target || &dst_texture->image != &dst)) {
+        return false;
+    }
+    if (dst_texture == nullptr && &dst != &g.main_color[0] && &dst != &g.main_color[1] && &dst != &g.display_color) {
+        return false;
+    }
+    const uint32_t slot = SampleSlotOf(src, src_texture);
+    if (slot == 0 || TransferKind(src, src_offsets, dst, dst_offsets) != CopyKind::DriverBlit) {
+        return false;
+    }
+    const int32_t dst_x0 = std::min(dst_offsets[0].x, dst_offsets[1].x);
+    const int32_t dst_x1 = std::max(dst_offsets[0].x, dst_offsets[1].x);
+    const int32_t dst_y0 = std::min(dst_offsets[0].y, dst_offsets[1].y);
+    const int32_t dst_y1 = std::max(dst_offsets[0].y, dst_offsets[1].y);
+    if (dst_x1 <= dst_x0 || dst_y1 <= dst_y0 || dst_x0 < 0 || dst_y0 < 0 ||
+        dst_x1 > static_cast<int32_t>(dst.width) || dst_y1 > static_cast<int32_t>(dst.height) ||
+        src_offsets[0].x == src_offsets[1].x || src_offsets[0].y == src_offsets[1].y) {
+        return false;
+    }
+    // The blit's own offsets, unordered, so the shader maps pixels as vkCmdBlitImage does (mirroring included).
+    PushConstants push = {};
+    push.xform[0] = static_cast<float>(dst_offsets[0].x);
+    push.xform[1] = static_cast<float>(dst_offsets[0].y);
+    push.xform[2] = static_cast<float>(src_offsets[1].x - src_offsets[0].x) /
+                    static_cast<float>(dst_offsets[1].x - dst_offsets[0].x);
+    push.xform[3] = static_cast<float>(src_offsets[1].y - src_offsets[0].y) /
+                    static_cast<float>(dst_offsets[1].y - dst_offsets[0].y);
+    push.uv_xform[0] = static_cast<float>(src_offsets[0].x);
+    push.uv_xform[1] = static_cast<float>(src_offsets[0].y);
+    push.uv_xform[2] = 1.0f / static_cast<float>(src.width);
+    push.uv_xform[3] = 1.0f / static_cast<float>(src.height);
+    push.texture_slot = slot;
+    push.sampler_slot = SamplerIndex(filter == VK_FILTER_LINEAR ? Filter::Linear : Filter::Nearest, Wrap::Clamp, Wrap::Clamp);
+
+    KZ_PROFILE_GPU_ZONE(cmd, "Kazarov native blit");
+    Transition(cmd, src, RestState(src));
+    Transition(cmd, dst, ColorAttachment());
+
+    VkRenderingAttachmentInfo color = {};
+    color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color.imageView = dst.view;
+    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    const VkRect2D  area = {
+        {dst_x0,                                 dst_y0                                },
+        {static_cast<uint32_t>(dst_x1 - dst_x0), static_cast<uint32_t>(dst_y1 - dst_y0)}
+    };
+    VkRenderingInfo rendering = {};
+    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea = area;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color;
+    vkCmdBeginRendering(cmd, &rendering);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.blit_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipeline_layout, 0, 1, &g.texture_set, 0, nullptr);
+    const VkViewport viewport = {static_cast<float>(dst_x0), static_cast<float>(dst_y0), static_cast<float>(dst_x1 - dst_x0),
+                                 static_cast<float>(dst_y1 - dst_y0), 0.0f, 1.0f};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &area);
+    vkCmdPushConstants(cmd, g.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(push), &push);
+    vkCmdDraw(cmd, 4, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    ToRest(cmd, src);
+    ToRest(cmd, dst);
+    if (cmd == DrawCommands()) {
+        // The blit pipeline left the frame's draw state behind: the next draw binds and sets everything again.
+        g.bound = {};
+        InvalidateBoundConstants();
+        vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    }
+    g.counters.grab_copies++;
+    MarkGpuScope(cmd, GpuScopeKind::Copy, dst.width << 16 | dst.height);
+    return true;
+}
+
 } // namespace
+
+void LogCopyTimings() {
+    static constexpr std::array<const char *, static_cast<size_t>(CopyKind::Count)> kNames = {
+        "copy", "driver_blit", "native_blit", "self_copy", "depth_copy"};
+    std::string line;
+    for (size_t index = 0; index < kNames.size(); ++index) {
+        const uint64_t count = g_copy_stats.count[index].exchange(0, std::memory_order_relaxed);
+        const uint64_t ns = g_copy_stats.ns[index].exchange(0, std::memory_order_relaxed);
+        line += std::format("{}{}={}/{:.3f}ms", index == 0 ? "" : " ", kNames[index], count,
+                            static_cast<double>(ns) / 1e6);
+    }
+    kz::Logf(kz::LogLevel::Info, "gfx", "timing copies {}", line);
+}
 
 void BeginMeshPhaseDiagnosticCanonicalReplay() {
     if (!MeshPhasesEnabled()) {
@@ -2372,6 +2610,7 @@ bool ExecuteDepthCopy(const LogicalRect &source) {
         return false;
     }
 
+    CopyTimer timer;
     // After the draws that made the depth: a copy placed in the upload stream would run before them.
     EndRendering();
     VkCommandBuffer cmd = DrawCommands();
@@ -2392,6 +2631,7 @@ bool ExecuteDepthCopy(const LogicalRect &source) {
     ToRest(cmd, main);
     ToRest(cmd, destination);
     MarkGpuScope(cmd, GpuScopeKind::Copy, destination.width << 16 | destination.height);
+    timer.Finish(CopyKind::DepthCopy);
     return true;
 }
 
@@ -2800,6 +3040,7 @@ bool CopyTexture(TextureHandle src, Rect src_rect, TextureHandle dst, int32_t ds
         return true;
     }
     RunOnRenderThread([&] {
+        CopyTimer       timer;
         VkCommandBuffer cmd = CopyCommands();
         MarkUsed(src_texture);
         MarkUsed(dst_texture);
@@ -2809,6 +3050,7 @@ bool CopyTexture(TextureHandle src, Rect src_rect, TextureHandle dst, int32_t ds
             dst_texture->aem_mask_mips = 0;
         }
         Transfer(cmd, *src_image, src_offsets, *dst_image, dst_offsets, VK_FILTER_NEAREST);
+        timer.Finish(TransferKind(*src_image, src_offsets, *dst_image, dst_offsets));
     });
     return true;
 }
@@ -2836,6 +3078,7 @@ bool BlitTexture(TextureHandle src, Rect src_rect, TextureHandle dst, Rect dst_r
     RunOnRenderThread([&] {
         VkFilter vk_filter =
             filter == Filter::Linear && src_image->format == kColorFormat ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        CopyTimer       timer;
         VkCommandBuffer cmd = CopyCommands();
         MarkUsed(src_texture);
         MarkUsed(dst_texture);
@@ -2844,7 +3087,12 @@ bool BlitTexture(TextureHandle src, Rect src_rect, TextureHandle dst, Rect dst_r
             dst_texture->nonblack_rgb_mips = 0;
             dst_texture->aem_mask_mips = 0;
         }
+        if (NativeBlit(cmd, *src_image, src_texture, src_offsets, *dst_image, dst_texture, dst_offsets, vk_filter)) {
+            timer.Finish(CopyKind::NativeBlit);
+            return;
+        }
         Transfer(cmd, *src_image, src_offsets, *dst_image, dst_offsets, vk_filter);
+        timer.Finish(TransferKind(*src_image, src_offsets, *dst_image, dst_offsets));
     });
     return true;
 }
