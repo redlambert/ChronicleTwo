@@ -167,6 +167,7 @@ bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
 bool                                            g_flare_enabled = true;
 bool                                            g_screen_wait_overlap = true;
+bool                                            g_smooth_pacing = false;
 uint64_t                                        g_window_immediate_start = 0; // copied-vertex draws at window start
 uint64_t                                        g_window_overlap_start = 0;   // screen wait overlap leases at window start
 double                                          g_window_resume_start = 0.0;  // and the renderer's wait for them
@@ -730,6 +731,12 @@ void FollowFlareSetting(std::string_view area) {
     const bool overlap = mode == ConfigScreenWaitOverlap::On ||
                          (mode == ConfigScreenWaitOverlap::Auto && (area.starts_with("dungeon") || g_auto_overlap.on));
     gfx::SetScreenWaitOverlap(overlap);
+    const bool smooth = ConfigGet().frame_pacing == ConfigFramePacing::Smooth;
+    gfx::SetPresentQueueDepth(smooth ? 2 : 1);
+    if (smooth != g_smooth_pacing) {
+        g_smooth_pacing = smooth;
+        CT_LOG_INFO(Main, "diag: frame pacing {} (Display settings)", smooth ? "smooth, present queue depth 2" : "low latency, present queue depth 1");
+    }
     if (overlap != g_screen_wait_overlap) {
         g_screen_wait_overlap = overlap;
         CT_LOG_INFO(Main, "diag: screen wait overlap {} ({} in Display settings, area '{}')", overlap ? "on" : "off",

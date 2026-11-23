@@ -66,6 +66,7 @@ constexpr auto kUnit = [](auto value) { return value >= 0 && value <= 1; };
 constexpr const char *kPresentModeNames[] = {"fifo", "mailbox", "immediate"};
 constexpr const char *kRenderThreadNames[] = {"off", "lockstep", "async"};
 constexpr const char *kScreenWaitOverlapNames[] = {"off", "on", "auto"};
+constexpr const char *kFramePacingNames[] = {"smooth", "low_latency"};
 constexpr const char *kAspectNames[] = {"auto", "4:3"};
 constexpr const char *kFpsDetailNames[] = {"fps", "ticks", "all"};
 constexpr const char *kHapticsNames[] = {"off", "vibration", "full"};
@@ -319,6 +320,9 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
             return true;
         }
         return ReadEnum(value, kScreenWaitOverlapNames, config.screen_wait_overlap);
+    }
+    if (name == "video.frame_pacing") {
+        return ReadEnum(value, kFramePacingNames, config.frame_pacing);
     }
     if (name == "video.render_thread") {
         return ReadEnum(value, kRenderThreadNames, config.render_thread);
@@ -603,6 +607,7 @@ std::string ConfigSerialize(const Config &config) {
     root["video"]["interpolation"] = config.interpolation;
     root["video"]["lens_flare"] = config.lens_flare;
     root["video"]["screen_wait_overlap"] = kScreenWaitOverlapNames[static_cast<std::size_t>(config.screen_wait_overlap)];
+    root["video"]["frame_pacing"] = kFramePacingNames[static_cast<std::size_t>(config.frame_pacing)];
     root["video"]["render_thread"] = kRenderThreadNames[static_cast<std::size_t>(config.render_thread)];
     root["video"]["max_fps"] = s.max_fps;
     root["video"]["width"] = s.window_width;

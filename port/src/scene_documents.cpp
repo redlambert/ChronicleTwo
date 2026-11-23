@@ -5,6 +5,11 @@
 
 #include "scene_documents.hpp"
 
+#include <chrono>
+#include <deque>
+#include <future>
+#include <mutex>
+
 namespace {
 
 using native_config::Json;
@@ -376,8 +381,92 @@ SceneConfigDocument ParseSceneConfig(const Json &document) {
 
 } // namespace
 
-std::optional<SceneMapDocument> ReadSceneMap(const void *buffer) {
-    return native_config::ReadBuffer<SceneMapDocument>(buffer, "scene_map", ParseSceneMap);
+namespace {
+
+using SceneMapResult = std::shared_future<std::shared_ptr<const SceneMapDocument>>;
+
+/**
+ * A scene_map document by its source path. A section reads its map file twice (map info, then placing parts) and the
+ * prefetch parses it first on a worker; each read and parse then happens once, and off the game thread.
+ */
+struct SceneMapEntry {
+    std::string    path;
+    SceneMapResult parsed;
+};
+
+constexpr std::size_t     kSceneMapEntries = 4;
+std::mutex                scene_map_mutex;
+std::deque<SceneMapEntry> scene_maps; // newest last
+
+std::shared_ptr<const SceneMapDocument> ParseSceneMapPath(const std::string &path) {
+    auto document = native_config::Read<SceneMapDocument>(path, "scene_map", ParseSceneMap);
+    return document ? std::make_shared<const SceneMapDocument>(std::move(*document)) : nullptr;
+}
+
+// Under scene_map_mutex.
+const SceneMapEntry *FindSceneMap(const std::string &path) {
+    for (const auto &entry : scene_maps) {
+        if (entry.path == path) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+// Under scene_map_mutex.
+void StoreSceneMap(const std::string &path, SceneMapResult parsed) {
+    std::erase_if(scene_maps, [&](const SceneMapEntry &entry) { return entry.path == path; });
+    if (scene_maps.size() >= kSceneMapEntries) {
+        scene_maps.pop_front();
+    }
+    scene_maps.push_back({.path = path, .parsed = std::move(parsed)});
+}
+
+} // namespace
+
+std::shared_ptr<const SceneMapDocument> ReadSceneMap(const void *buffer) {
+    const auto path = native_config::BufferPath(buffer);
+    if (!path) {
+        native_config::Report("<buffer>", "configuration buffer has no native source");
+        return nullptr;
+    }
+    SceneMapResult parsed;
+    {
+        const std::scoped_lock lock(scene_map_mutex);
+        if (const auto *entry = FindSceneMap(*path)) {
+            parsed = entry->parsed;
+        }
+    }
+    if (parsed.valid()) {
+        return parsed.get();
+    }
+    auto document = ParseSceneMapPath(*path);
+    std::promise<std::shared_ptr<const SceneMapDocument>> done;
+    done.set_value(document);
+    const std::scoped_lock lock(scene_map_mutex);
+    StoreSceneMap(*path, done.get_future().share());
+    return document;
+}
+
+void PrefetchSceneMap(const void *buffer) {
+    const auto path = native_config::BufferPath(buffer);
+    if (!path) {
+        return;
+    }
+    // Started afresh for every section load, so an edited file is read again.
+    auto parsed = std::async(std::launch::async, [file = *path] { return ParseSceneMapPath(file); }).share();
+    const std::scoped_lock lock(scene_map_mutex);
+    StoreSceneMap(*path, std::move(parsed));
+}
+
+bool SceneMapReady(const void *buffer) {
+    const auto path = native_config::BufferPath(buffer);
+    if (!path) {
+        return true;
+    }
+    const std::scoped_lock lock(scene_map_mutex);
+    const auto            *entry = FindSceneMap(*path);
+    return entry == nullptr || entry->parsed.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 }
 
 std::optional<SceneConfigDocument> ReadSceneConfig(const void *buffer) {

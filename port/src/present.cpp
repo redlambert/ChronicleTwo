@@ -708,7 +708,8 @@ public:
         if (work.canonical_ms > 0.0f && work.replay_ms > 0.0f && work.replay_ms != last_replay_ms) {
             // A held pair renders no replay, so its cost follows the canonical render's by this ratio.
             last_replay_ms = work.replay_ms;
-            replay_ratio = std::clamp(work.replay_ms / work.canonical_ms, kMinReplayRatio, kMaxReplayRatio);
+            measured_ratio = work.replay_ms / work.canonical_ms;
+            replay_ratio = std::clamp(measured_ratio, kMinReplayRatio, kMaxReplayRatio);
         }
         // Only a pair that rendered its intermediate says anything about that intermediate's cost.
         const bool overran = !last_held && last_pair != Clock::time_point{} && now - last_pair > kPairOverrun && now - last_pair < kPairStale;
@@ -724,7 +725,11 @@ public:
             last_held = true;
             return true;
         }
-        last_held = work.canonical_ms * (1.0f + replay_ratio) > kBudgetMs;
+        // With a present queue depth of two the pair's two images share both of its refreshes, so only their sum must
+        // fit; the replay's measured share decides, down to a lower floor, and the endpoint's copy takes the margin.
+        const bool  queued = gfx::PresentQueueDepth() >= 2;
+        const float ratio = queued ? std::clamp(measured_ratio, kQueuedMinReplayRatio, kMaxReplayRatio) : replay_ratio;
+        last_held = work.canonical_ms * (1.0f + ratio) > (queued ? kQueuedBudgetMs : kBudgetMs);
         return last_held;
     }
 
@@ -754,16 +759,28 @@ private:
     // The samples are a frame or two apart, so one odd pair must not decide the next.
     static constexpr float kMinReplayRatio = 0.9f;
     static constexpr float kMaxReplayRatio = 1.4f;
+    // Queued pairs: two refreshes less the endpoint's copy and present, and a floor under the replay's share that
+    // still covers a pair whose replay measured light once.
+    static constexpr float kQueuedBudgetMs = 32.5f;
+    static constexpr float kQueuedMinReplayRatio = 0.6f;
 
     Clock::time_point last_pair{};
     float             last_replay_ms = 0.0f;
     float             replay_ratio = 1.1f;
+    float             measured_ratio = 1.1f;
     int               cpu_hold = 0;
     int               overruns = 0;
     bool              last_held = false;
 };
 
 IntermediateHold intermediate_hold;
+
+// With a present queue depth of two every screen image is taken until the present before last is on screen, and a
+// frame about to present would wait for one holding the device; the idle hook waits instead, leaving the device to
+// the game thread. Asked only right before a present, since each answer is a query to the screen's history.
+bool QueueHasRoom() {
+    return gfx::PresentQueueDepth() < 2 || !gfx::PresentedGateActive() || gfx::PresentedGateReady();
+}
 
 // The render thread's idle hook. It presents the newest published tick and returns how long it may sleep.
 std::chrono::steady_clock::duration PresentRenderIdle(void *) {
@@ -783,7 +800,6 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
         TraceScheduleGuard(frame, ScheduleEvent::Idle, ScheduleReason::GpuBacklog, false);
         return kPresentGpuPoll;
     }
-
     if (frame.epoch != settings_epoch.load()) {
         TraceScheduleGuard(frame, ScheduleEvent::Idle, ScheduleReason::EpochMismatch, true, {}, false);
         render_pair.Cancel();
@@ -823,6 +839,10 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
         }
         if (decision.action == Action::Done) {
             return std::chrono::milliseconds(2);
+        }
+        if (!QueueHasRoom()) {
+            TraceScheduleGuard(frame, ScheduleEvent::Idle, ScheduleReason::GpuBacklog, false);
+            return std::chrono::milliseconds(1);
         }
         const bool hold = decision.action == Action::Intermediate && intermediate_hold.Next(now);
         const bool shown = decision.action == Action::Endpoint || hold ? PresentAuthoredEndpoint(frame)
@@ -880,6 +900,9 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
         return std::chrono::milliseconds(1);
     }
 
+    if (!QueueHasRoom()) {
+        return std::chrono::milliseconds(1);
+    }
     const float alpha = PublishedAlpha(frame, now);
     if (!render_pacer.Present([&] { return RenderPublished(frame, alpha); }, Clock::now)) {
         return std::chrono::milliseconds(1);

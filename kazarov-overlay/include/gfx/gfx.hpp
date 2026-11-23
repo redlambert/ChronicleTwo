@@ -180,6 +180,12 @@ bool ScreenWaitOverlap();
 uint64_t ScreenWaitOverlapLeases();
 double   ScreenWaitOverlapResumeMs();
 
+// Present queue depth (Switch prior-Presented gate): 1 queues a present only once the previous one is on screen; 2
+// lets one more wait in the queue, so a frame may take two screen refreshes of work at one refresh more latency.
+// Any thread; takes effect from the next present.
+void     SetPresentQueueDepth(uint32_t depth);
+uint32_t PresentQueueDepth();
+
 // Async only: called on the worker whenever its queue is empty and no lease is held or wanted. Returns how long the
 // worker may sleep before calling again; zero calls again at once. Any Dispatch, lease or WakeRenderThread wakes it
 // early. Ignored in Off and Lockstep.

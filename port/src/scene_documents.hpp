@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -362,9 +363,21 @@ struct SceneConfigDocument {
 };
 
 /**
- * Parses the scene_map document a loaded map buffer was read from.
+ * Parses the scene_map document a loaded map buffer was read from. A document PrefetchSceneMap started is shared rather
+ * than read again, waiting for its worker if it is still parsing.
  */
-std::optional<SceneMapDocument> ReadSceneMap(const void *buffer);
+std::shared_ptr<const SceneMapDocument> ReadSceneMap(const void *buffer);
+
+/**
+ * Reads and parses the scene_map document a loaded map buffer was read from on a worker thread, replacing any earlier
+ * parse of the same file, so the section loader's later reads take no time on the game thread.
+ */
+void PrefetchSceneMap(const void *buffer);
+
+/**
+ * Whether the scene_map document of a buffer is not being parsed on a worker, so ReadSceneMap will not wait for it.
+ */
+bool SceneMapReady(const void *buffer);
 
 /**
  * Parses the scene_config document a loaded configuration buffer was read from.

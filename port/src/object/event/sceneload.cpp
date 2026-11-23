@@ -29,6 +29,7 @@
 #include "platform/datapacks.hpp"
 #include "platform/section_prefetch.hpp"
 #include "profile.hpp"
+#include "scene_documents.hpp"
 #include "platform/texture_catalog.hpp"
 #include "text/bounded.hpp"
 #include "texture_source.hpp"
@@ -461,6 +462,18 @@ double SliceMs(std::chrono::steady_clock::duration duration) {
     return std::chrono::duration<double, std::milli>(duration).count();
 }
 
+// Starts the worker parse of a section's map file documents (scene_documents.hpp).
+void PrefetchSceneMapFiles(const SCN_LOADMAP_INFO2 &info) {
+    PrefetchSceneMap(info.files[0].map_data);
+    if (info.files[1].enable != 0) {
+        PrefetchSceneMap(info.files[1].map_data);
+    }
+}
+
+bool SceneMapFilesReady(const SCN_LOADMAP_INFO2 &info) {
+    return SceneMapReady(info.files[0].map_data) && (info.files[1].enable == 0 || SceneMapReady(info.files[1].map_data));
+}
+
 /**
  *
  * Builds the next pieces of the data step; returns true once every piece is built and the block counts are stored.
@@ -607,6 +620,11 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
         if (step == SCN_LOADMAP_STEP_DATA && section_prefetch::ShouldWait()) {
             return 0;
         }
+        // Map info and placing parts both read the map file's document; a worker reads and parses it from the create
+        // step on, and the map info step waits a frame or two for it rather than reading it in one long frame.
+        if (step == SCN_LOADMAP_STEP_MAP_INFO && !SceneMapFilesReady(bg_load_info)) {
+            return 0;
+        }
 
         if (step == SCN_LOADMAP_STEP_DATA) {
             CMap *map = GetMap(bg_load_info.map_no);
@@ -623,6 +641,9 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
                 case SCN_LOADMAP_STEP_CREATE: {
                     CT_PROFILE_ZONE("Section step: create map");
                     result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    if (result >= 0) {
+                        PrefetchSceneMapFiles(bg_load_info);
+                    }
                     break;
                 }
                 case SCN_LOADMAP_STEP_MAP_INFO: {

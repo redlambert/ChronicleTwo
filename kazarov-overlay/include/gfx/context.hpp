@@ -79,7 +79,13 @@ struct PresentedFeedbackBudget {
     /**
      * Validates exact predecessor feedback and the elapsed budget after a synchronous query.
      */
-    PresentedFeedbackStatus Observe(uint64_t id, uint64_t enqueue, const PresentedFeedbackObservation &observation, uint64_t now_ns) {
+    PresentedFeedbackStatus Observe(uint64_t id, uint64_t enqueue, const PresentedFeedbackObservation &observation, uint64_t now_ns,
+                                    uint64_t latest = UINT64_MAX) {
+        // latest is the newest frame this producer has queued: the awaited frame itself, or with a queue depth of two
+        // the frame queued after it.
+        if (latest == UINT64_MAX) {
+            latest = id;
+        }
         if (!active || paused || now_ns < last_ns || !observation.valid) {
             return PresentedFeedbackStatus::Invalid;
         }
@@ -93,7 +99,7 @@ struct PresentedFeedbackBudget {
         identity_set = true;
         expected_id = id;
         expected_enqueue_ns = enqueue;
-        if (observation.latest_id != id) {
+        if (observation.latest_id != latest) {
             return PresentedFeedbackStatus::Invalid;
         }
         if (id == 0) {

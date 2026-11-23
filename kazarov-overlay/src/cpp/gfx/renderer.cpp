@@ -477,6 +477,9 @@ struct VsyncGate {
     NativeFrameReader       reader;                     /**< Reused history request and reply buffers. */
     uint64_t                expected_id = 0;            /**< Exact latest native ID permitted before the next queue. */
     uint64_t                expected_enqueue_ns = 0;    /**< Stable enqueue timestamp for that native ID. */
+    uint64_t                older_id = 0;               /**< The accepted native ID queued before expected_id. */
+    uint64_t                older_enqueue_ns = 0;       /**< Stable enqueue timestamp for older_id. */
+    bool                    episode_ahead = false;      /**< Whether the current admission waits for older_id. */
     uint64_t                last_accepted_id = 0;       /**< Most recent native ID assigned to an accepted owned present. */
     uint64_t                last_presented_id = 0;      /**< Most recent exact predecessor confirmed Presented. */
     uint64_t                queries = 0;                /**< History queries made by feedback pacing alone. */
@@ -495,6 +498,8 @@ struct VsyncGate {
 
 /** Device-thread gate state, initialized before and released after the render worker. */
 VsyncGate g_vsync_gate;
+/** Presents the producer may have queued and not yet shown: 1 waits for the previous present, 2 for the one before. */
+std::atomic<uint32_t> g_present_queue_depth{1};
 /** Publishes successful native-gate activation to presentation policy readers. */
 std::atomic<bool> g_vsync_gate_active{false};
 /** Publishes successful initialization of the prior-Presented mode specifically. */
@@ -638,7 +643,11 @@ uint64_t PresentedGateLatestId(const NativeFrameBatch &batch) {
  * Samples exact predecessor feedback once within the shared admission budget.
  */
 PresentedFeedbackStatus PollPresentedGate() {
-    auto      &gate = g_vsync_gate;
+    auto &gate = g_vsync_gate;
+    // The depth is fixed for one admission, so a settings change never alters the frame an admission waits for.
+    if (!gate.feedback_budget.active) {
+        gate.episode_ahead = !gate.first_queue && g_present_queue_depth.load(std::memory_order_relaxed) >= 2;
+    }
     const auto admitted = gate.feedback_budget.BeginQuery(NativeHistoryClockNs());
     if (admitted == PresentedFeedbackStatus::Timeout) {
         FailVsyncGate("history-poll-budget", KERNELRESULT(TimedOut), true);
@@ -654,7 +663,9 @@ PresentedFeedbackStatus PollPresentedGate() {
         const auto *record = PresentedGateRecord(batch, latest_id);
         gate.expected_enqueue_ns = record == nullptr ? 0 : record->enqueue_ns;
     }
-    const auto                        *previous = PresentedGateRecord(batch, gate.expected_id);
+    const uint64_t                     wait_id = gate.episode_ahead ? gate.older_id : gate.expected_id;
+    const uint64_t                     wait_enqueue_ns = gate.episode_ahead ? gate.older_enqueue_ns : gate.expected_enqueue_ns;
+    const auto                        *previous = PresentedGateRecord(batch, wait_id);
     const PresentedFeedbackObservation observation{
         .latest_id = latest_id,
         .predecessor_found = previous != nullptr,
@@ -662,12 +673,12 @@ PresentedFeedbackStatus PollPresentedGate() {
         .presented = previous != nullptr && previous->state == NativeFrameState::Presented,
         .presentation_ns = previous == nullptr ? 0 : previous->presentation_ns};
     const uint64_t end_ns = NativeHistoryClockNs();
-    const auto     status = gate.feedback_budget.Observe(gate.expected_id, gate.expected_enqueue_ns, observation, end_ns);
+    const auto     status = gate.feedback_budget.Observe(wait_id, wait_enqueue_ns, observation, end_ns, gate.expected_id);
     if (status == PresentedFeedbackStatus::Timeout) {
         FailVsyncGate("history-poll-budget", KERNELRESULT(TimedOut), true);
     }
     if (status == PresentedFeedbackStatus::Invalid ||
-        (previous != nullptr && gate.last_presented_id == gate.expected_id &&
+        (previous != nullptr && gate.last_presented_id == wait_id &&
          (previous->state != NativeFrameState::Presented || previous->presentation_ns == 0))) {
         FailVsyncGate("history-predecessor-protocol", MAKERESULT(Module_Libnx, LibnxError_BadInput));
     }
@@ -746,11 +757,21 @@ void NotePresentedGateQueue(VkResult result, uint64_t begin_ns, uint64_t end_ns)
     if (gate.expected_id == static_cast<uint64_t>(INT64_MAX) || latest_id != gate.expected_id + 1) {
         FailVsyncGate("history-accepted-identifier", MAKERESULT(Module_Libnx, LibnxError_BadInput));
     }
-    if (gate.expected_id != 0) {
-        const auto *previous = PresentedGateRecord(batch, gate.expected_id);
-        if (previous == nullptr || previous->enqueue_ns != gate.expected_enqueue_ns ||
+    // The frame the admission waited for must be on screen; with a queue depth of two the frame after it may still
+    // be queued.
+    const uint64_t shown_id = gate.episode_ahead ? gate.older_id : gate.expected_id;
+    const uint64_t shown_enqueue_ns = gate.episode_ahead ? gate.older_enqueue_ns : gate.expected_enqueue_ns;
+    if (shown_id != 0) {
+        const auto *previous = PresentedGateRecord(batch, shown_id);
+        if (previous == nullptr || previous->enqueue_ns != shown_enqueue_ns ||
             previous->state != NativeFrameState::Presented || previous->presentation_ns == 0) {
             FailVsyncGate("history-accepted-predecessor", MAKERESULT(Module_Libnx, LibnxError_BadInput));
+        }
+    }
+    if (gate.episode_ahead && gate.expected_id != 0) {
+        const auto *queued = PresentedGateRecord(batch, gate.expected_id);
+        if (queued == nullptr || queued->enqueue_ns != gate.expected_enqueue_ns) {
+            FailVsyncGate("history-accepted-queued", MAKERESULT(Module_Libnx, LibnxError_BadInput));
         }
     }
     const auto *accepted = PresentedGateRecord(batch, latest_id);
@@ -758,6 +779,8 @@ void NotePresentedGateQueue(VkResult result, uint64_t begin_ns, uint64_t end_ns)
         accepted->enqueue_ns + 1000 < begin_ns || accepted->enqueue_ns > end_ns + 1000) {
         FailVsyncGate("history-accepted-call-clock", MAKERESULT(Module_Libnx, LibnxError_BadInput));
     }
+    gate.older_id = gate.expected_id;
+    gate.older_enqueue_ns = gate.expected_enqueue_ns;
     gate.expected_id = latest_id;
     gate.expected_enqueue_ns = accepted->enqueue_ns;
     gate.last_accepted_id = latest_id;
@@ -4955,6 +4978,22 @@ void SetFrameTimingEnabled(bool enabled) { g_timing_enabled.store(enabled); }
 bool FrameTimingEnabled() { return Timing(); }
 
 void SetGpuWorkTracking(bool enabled) { g_gpu_work_tracking.store(enabled); }
+
+void SetPresentQueueDepth(uint32_t depth) {
+#ifdef __SWITCH__
+    detail::g_present_queue_depth.store(std::clamp<uint32_t>(depth, 1, 2), std::memory_order_relaxed);
+#else
+    (void)depth;
+#endif
+}
+
+uint32_t PresentQueueDepth() {
+#ifdef __SWITCH__
+    return detail::g_present_queue_depth.load(std::memory_order_relaxed);
+#else
+    return 1;
+#endif
+}
 
 RecentGpuWork GetRecentGpuWork() {
     return {.canonical_ms = g_recent_canonical_ms.load(std::memory_order_relaxed),

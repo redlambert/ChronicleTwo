@@ -28,3 +28,9 @@ changed and redo these changes on the new versions.
     copies, driver blits, native blits, self-copies, self-blits and depth copies (`src/cpp/gfx/draw.cpp`,
     `src/cpp/gfx/renderer.cpp`)
   - Tests: `src/cpp/tests/gfx_native_blit_test.cpp` checks native blits against driver blits
+- Present queue depth (the big Kazarov project, part 2): the Switch prior-Presented gate can let one more present
+  wait in the screen's queue (`gfx::SetPresentQueueDepth(2)`), waiting for the present before last instead of the
+  last one. A busy frame pair then gets both of its screen refreshes of work, at one refresh more latency. The port
+  sets it from Display settings, Frame pacing (Smooth is 2, Low latency is 1). The depth is fixed for each admission,
+  so a settings change takes effect cleanly at the next present (`include/gfx/context.hpp`, `include/gfx/gfx.hpp`,
+  `src/cpp/gfx/renderer.cpp`)

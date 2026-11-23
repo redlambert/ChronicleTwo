@@ -34,6 +34,14 @@ enum class ConfigScreenWaitOverlap {
     Auto,
 };
 
+// video.frame_pacing: Smooth lets one more frame wait in the screen's queue, so a busy frame pair gets two screen
+// refreshes of work at one refresh more latency (Kazarov gfx::SetPresentQueueDepth). Low latency shows each frame
+// as soon as the previous one is on screen.
+enum class ConfigFramePacing {
+    Smooth,
+    LowLatency,
+};
+
 // video.render_thread: which thread runs device work. The environment (DC2_RENDER_THREAD, KZ_RENDER_THREAD)
 // overrides it, and headless and screenshot runs always use off.
 enum class ConfigRenderThread {
@@ -61,6 +69,8 @@ struct Config : HostSettings {
     bool lens_flare = true;
     // video.screen_wait_overlap: see ConfigScreenWaitOverlap.
     ConfigScreenWaitOverlap screen_wait_overlap = ConfigScreenWaitOverlap::Auto;
+    // video.frame_pacing: see ConfigFramePacing.
+    ConfigFramePacing frame_pacing = ConfigFramePacing::Smooth;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;
