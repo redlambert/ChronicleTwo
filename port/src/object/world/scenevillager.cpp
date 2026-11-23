@@ -15,6 +15,7 @@
 #include "mg_memory.hpp"
 #include "mg_texture.hpp"
 #include "mglib.hpp"
+#include "profile.hpp"
 #include "savedata.hpp"
 #include "scene.hpp"
 #include "sceneevent.hpp"
@@ -831,7 +832,10 @@ bool CScene::LoadSubVillagerStep() {
                 } else {
                     dc2::log::PrintGame("load vlgr memory over!!!");
                 }
-            } else if (LoadFile2(model_name->data(), read_storage, &file_size, LOAD_FILE_READ) == 0) {
+            } else if ([&] {
+                           CT_PROFILE_ZONE("Villager read file");
+                           return LoadFile2(model_name->data(), read_storage, &file_size, LOAD_FILE_READ);
+                       }() == 0) {
                 skip = true;
             } else {
                 int chr_size = GetChrFileSize(buffer, file_size);
@@ -843,8 +847,11 @@ bool CScene::LoadSubVillagerStep() {
                 } else {
                     std::snprintf(suffix, sizeof(suffix), "%d", load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP);
                     dc2::text::Copy(tex_manager->name_suffix, dc2::text::View(suffix));
-                    slot = LoadChara(load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP, buffer, "info", stack, stack, stack,
-                                     load.texb + load.loaded, 0);
+                    {
+                        CT_PROFILE_ZONE("Villager build character");
+                        slot = LoadChara(load.loaded + SCENE_SUB_VILLAGER_SLOT_TOP, buffer, "info", stack, stack, stack,
+                                         load.texb + load.loaded, 0);
+                    }
                     tex_manager->name_suffix[0] = 0;
                     dc2::log::PrintGame("used : %dkb (%dkb)\n", (rest_before - stack->stGetRest()) * 16 / 1024, chr_size / 1024);
                 }
@@ -854,7 +861,13 @@ bool CScene::LoadSubVillagerStep() {
                 SetCharaNo(slot, load.chara_nos[i]);
                 CharaObjectOnOff(slot, stack);
 
-                if (GetCharacter(slot) != nullptr && RegisterVillager(slot, load.chara_nos[i], load.places[i]) != 0) {
+                bool registered = false;
+                {
+                    CT_PROFILE_ZONE("Villager register");
+                    registered = GetCharacter(slot) != nullptr &&
+                                 RegisterVillager(slot, load.chara_nos[i], load.places[i]) != 0;
+                }
+                if (registered) {
                     if (load.defer_show) {
                         load.shown[load.shown_count++] = slot;
                     } else {

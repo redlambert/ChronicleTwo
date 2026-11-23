@@ -618,7 +618,44 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
             }
             result = SCN_LOADMAP_STEP_EFFECT;
         } else {
-            result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+            // Named per step, so a long section load frame shows which step it was.
+            switch (step) {
+                case SCN_LOADMAP_STEP_CREATE: {
+                    CT_PROFILE_ZONE("Section step: create map");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                case SCN_LOADMAP_STEP_MAP_INFO: {
+                    CT_PROFILE_ZONE("Section step: map info");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                case SCN_LOADMAP_STEP_EFFECT: {
+                    CT_PROFILE_ZONE("Section step: effects and sky");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                case SCN_LOADMAP_STEP_CREATE_MAP: {
+                    CT_PROFILE_ZONE("Section step: place parts");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                case SCN_LOADMAP_STEP_FUNC_POINT: {
+                    CT_PROFILE_ZONE("Section step: function points");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                case SCN_LOADMAP_STEP_CFG: {
+                    CT_PROFILE_ZONE("Section step: configuration script");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+                default: {
+                    CT_PROFILE_ZONE("Section step: other");
+                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
+                    break;
+                }
+            }
         }
 
         if (result < 0) {
