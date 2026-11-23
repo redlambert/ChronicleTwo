@@ -3999,6 +3999,7 @@ void CreateMainTargets() {
 }
 
 void DestroyMainTargets() {
+    DestroyCopyScratch();
     ++g.canonical_target_generation;
     g.canonical_newest = false;
     for (Image &image : g.main_color) {

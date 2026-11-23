@@ -1643,6 +1643,52 @@ Image &AcquireScratch(uint32_t width, uint32_t height, VkFormat format) {
 }
 
 /**
+ * One scratch image for work within one image: the region and a texel around it are copied to the same place in it,
+ * then copied or drawn back. Made once, as large as the main images (or the first image that needs it, if larger),
+ * and kept, so no copy makes an image; it has a bindless slot of its own (kScratchSlot) to be drawn from. It is never
+ * remade larger while frames may still read its slot: an image too large for it takes the older path.
+ */
+Image g_blit_scratch;
+
+Image *BlitScratch(const Image &image) {
+    if (!g.bindless || image.format != kColorFormat) {
+        return nullptr;
+    }
+    if (g_blit_scratch.image != VK_NULL_HANDLE) {
+        return image.width <= g_blit_scratch.width && image.height <= g_blit_scratch.height ? &g_blit_scratch : nullptr;
+    }
+    const uint32_t width = std::max(image.width, g.main_color[0].width);
+    const uint32_t height = std::max(image.height, g.main_color[0].height);
+    g_blit_scratch = CreateImage(width, height, 1, kColorFormat,
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (g_blit_scratch.image == VK_NULL_HANDLE) {
+        return nullptr;
+    }
+    g.texture_views[kScratchSlot] = g_blit_scratch.view;
+    VkDescriptorImageInfo info = {VK_NULL_HANDLE, g_blit_scratch.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet  write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = g.texture_set;
+    write.dstBinding = 0;
+    write.dstArrayElement = kScratchSlot;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(g.device, 1, &write, 0, nullptr);
+    kz::Logf(kz::LogLevel::Info, "gfx", "copy scratch {}x{} (slot {})", width, height, kScratchSlot);
+    return &g_blit_scratch;
+}
+
+// The region with a texel around it, within the image: what a blit from the region may read.
+void PaddedRegion(const Image &image, const VkOffset3D offsets[2], VkOffset3D out[2]) {
+    out[0] = {std::max(std::min(offsets[0].x, offsets[1].x) - 1, 0),
+              std::max(std::min(offsets[0].y, offsets[1].y) - 1, 0), 0};
+    out[1] = {std::min(std::max(offsets[0].x, offsets[1].x) + 1, static_cast<int32_t>(image.width)),
+              std::min(std::max(offsets[0].y, offsets[1].y) + 1, static_cast<int32_t>(image.height)), 1};
+}
+
+/**
  * Copy and blit counts and render-thread time by kind, for the once-a-second timing report (KZ_PERF_LOG=1).
  */
 enum class CopyKind : size_t {
@@ -1650,6 +1696,7 @@ enum class CopyKind : size_t {
     DriverBlit,  // scaled blit by the driver (vkCmdBlitImage)
     NativeBlit,  // scaled blit drawn by NativeBlit
     SelfCopy,    // copy within one image, through a scratch image
+    SelfBlit,    // scaled blit within one image, drawn from the copy scratch image
     DepthCopy,   // CopyMainDepthToTarget
     Count,
 };
@@ -1710,6 +1757,14 @@ void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], 
     auto height = [](const VkOffset3D o[2]) { return std::abs(o[1].y - o[0].y); };
 
     if (&src == &dst) {
+        if (Image *scratch = BlitScratch(src); scratch != nullptr) {
+            // The region goes to the same place in the scratch image and comes back from there.
+            VkOffset3D padded[2];
+            PaddedRegion(src, src_offsets, padded);
+            Transfer(cmd, src, padded, *scratch, padded, VK_FILTER_NEAREST);
+            Transfer(cmd, *scratch, src_offsets, dst, dst_offsets, filter);
+            return;
+        }
         Image &scratch = AcquireScratch(static_cast<uint32_t>(width(src_offsets)),
                                         static_cast<uint32_t>(height(src_offsets)), src.format);
         VkOffset3D whole[2] = {
@@ -1788,6 +1843,9 @@ uint32_t SampleSlotOf(const Image &image, const Texture *texture) {
     if (&image == &g.display_color) {
         return kDisplaySlot;
     }
+    if (&image == &g_blit_scratch) {
+        return kScratchSlot;
+    }
     return 0;
 }
 
@@ -1804,7 +1862,8 @@ uint32_t SampleSlotOf(const Image &image, const Texture *texture) {
  * mip, a source with a bindless slot, both in the colour format, and a scaled blit: a same-size one stays a copy.
  */
 bool NativeBlit(VkCommandBuffer cmd, Image &src, const Texture *src_texture, const VkOffset3D src_offsets[2],
-                Image &dst, const Texture *dst_texture, const VkOffset3D dst_offsets[2], VkFilter filter) {
+                Image &dst, const Texture *dst_texture, const VkOffset3D dst_offsets[2], VkFilter filter,
+                const Image *sample_as = nullptr) {
     if (!g.bindless || g.blit_pipeline == VK_NULL_HANDLE || !NativeBlitWanted() || &src == &dst ||
         src.format != kColorFormat || dst.format != kColorFormat || dst.mips != 1 || src.view == VK_NULL_HANDLE ||
         dst.view == VK_NULL_HANDLE || AttachmentAlphaIdentityReady() || AttachmentAlphaTraceRecording()) {
@@ -1843,6 +1902,10 @@ bool NativeBlit(VkCommandBuffer cmd, Image &src, const Texture *src_texture, con
     push.uv_xform[3] = 1.0f / static_cast<float>(src.height);
     push.texture_slot = slot;
     push.sampler_slot = SamplerIndex(filter == VK_FILTER_LINEAR ? Filter::Linear : Filter::Nearest, Wrap::Clamp, Wrap::Clamp);
+    if (sample_as != nullptr) {
+        // Drawn from the scratch copy of sample_as: samples clamp at sample_as's edges, as they would there.
+        push.flags = sample_as->width << 16 | sample_as->height;
+    }
 
     KZ_PROFILE_GPU_ZONE(cmd, "Kazarov native blit");
     Transition(cmd, src, RestState(src));
@@ -1888,11 +1951,66 @@ bool NativeBlit(VkCommandBuffer cmd, Image &src, const Texture *src_texture, con
     return true;
 }
 
+/**
+ * A scaled blit within one image, drawn like NativeBlit from a copy of the region (and a texel around it) at the
+ * same place in the scratch image, or false to leave it to Transfer.
+ */
+bool NativeSelfBlit(VkCommandBuffer cmd, Image &image, const Texture *texture, const VkOffset3D src_offsets[2],
+                    const VkOffset3D dst_offsets[2], VkFilter filter) {
+    if (!g.bindless || g.blit_pipeline == VK_NULL_HANDLE || !NativeBlitWanted() || image.format != kColorFormat ||
+        image.mips != 1 || AttachmentAlphaIdentityReady() || AttachmentAlphaTraceRecording()) {
+        return false;
+    }
+    if (texture != nullptr && (!texture->render_target || &texture->image != &image)) {
+        return false;
+    }
+    if (texture == nullptr && &image != &g.main_color[0] && &image != &g.main_color[1] && &image != &g.display_color) {
+        return false;
+    }
+    const bool same_size =
+        std::abs(src_offsets[1].x - src_offsets[0].x) == std::abs(dst_offsets[1].x - dst_offsets[0].x) &&
+        std::abs(src_offsets[1].y - src_offsets[0].y) == std::abs(dst_offsets[1].y - dst_offsets[0].y) &&
+        src_offsets[1].x > src_offsets[0].x && src_offsets[1].y > src_offsets[0].y &&
+        dst_offsets[1].x > dst_offsets[0].x && dst_offsets[1].y > dst_offsets[0].y;
+    if (same_size) {
+        return false;
+    }
+    Image *scratch = BlitScratch(image);
+    if (scratch == nullptr) {
+        return false;
+    }
+    VkOffset3D padded[2];
+    PaddedRegion(image, src_offsets, padded);
+    if (padded[1].x <= padded[0].x || padded[1].y <= padded[0].y) {
+        return false;
+    }
+    Transfer(cmd, image, padded, *scratch, padded, VK_FILTER_NEAREST);
+    if (NativeBlit(cmd, *scratch, nullptr, src_offsets, image, texture, dst_offsets, filter, &image)) {
+        return true;
+    }
+    // Not drawable after all: blit back from the scratch copy as the driver would.
+    Transfer(cmd, *scratch, src_offsets, image, dst_offsets, filter);
+    return true;
+}
+
 } // namespace
+
+void DestroyCopyScratch() {
+    if (g_blit_scratch.image != VK_NULL_HANDLE) {
+        DestroyImage(g_blit_scratch);
+        g_blit_scratch = Image{};
+        // Partially bound: the slot is not read until a new scratch image is written to it.
+        g.texture_views[kScratchSlot] = VK_NULL_HANDLE;
+    }
+    for (ScratchImage &scratch : g_scratch_images) {
+        DestroyImage(scratch.image);
+    }
+    g_scratch_images.clear();
+}
 
 void LogCopyTimings() {
     static constexpr std::array<const char *, static_cast<size_t>(CopyKind::Count)> kNames = {
-        "copy", "driver_blit", "native_blit", "self_copy", "depth_copy"};
+        "copy", "driver_blit", "native_blit", "self_copy", "self_blit", "depth_copy"};
     std::string line;
     for (size_t index = 0; index < kNames.size(); ++index) {
         const uint64_t count = g_copy_stats.count[index].exchange(0, std::memory_order_relaxed);
@@ -3086,6 +3204,11 @@ bool BlitTexture(TextureHandle src, Rect src_rect, TextureHandle dst, Rect dst_r
             dst_texture->opaque_alpha_mips = 0;
             dst_texture->nonblack_rgb_mips = 0;
             dst_texture->aem_mask_mips = 0;
+        }
+        if (src_image == dst_image &&
+            NativeSelfBlit(cmd, *dst_image, dst_texture, src_offsets, dst_offsets, vk_filter)) {
+            timer.Finish(CopyKind::SelfBlit);
+            return;
         }
         if (NativeBlit(cmd, *src_image, src_texture, src_offsets, *dst_image, dst_texture, dst_offsets, vk_filter)) {
             timer.Finish(CopyKind::NativeBlit);

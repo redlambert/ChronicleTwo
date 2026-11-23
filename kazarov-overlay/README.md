@@ -19,9 +19,12 @@ changed and redo these changes on the new versions.
     of `vkCmdBlitImage`, which NVK runs as a heavy meta draw. Same pixels, mirroring included; `KZ_NATIVE_BLIT=0`
     turns it off. The display image now has a bindless slot (3) so it can be blitted from; textures start at 4
     (`include/gfx/context.hpp`, `src/cpp/gfx/draw.cpp`, `src/cpp/gfx/pipelines.cpp`, `src/cpp/gfx/renderer.cpp`)
-  - Scratch image pool: a copy within one image reuses its scratch image instead of creating and freeing one every
-    time (`src/cpp/gfx/draw.cpp`)
+  - Copy scratch image: work within one image (the game's blur and glow passes) goes through one kept scratch image
+    with a bindless slot of its own (4; textures now start at 5), so it makes no image and a scaled blit within one
+    image is drawn natively too instead of going through the driver's blit. A smaller per-size pool remains for
+    images too large for it (`include/gfx/context.hpp`, `src/cpp/gfx/draw.cpp`, `src/cpp/gfx/renderer.cpp`,
+    `src/cpp/gfx/shaders/blit.frag`)
   - Copy timing: with `KZ_PERF_LOG=1`, a "timing copies" line each second gives the count and render-thread time of
-    copies, driver blits, native blits, self-copies and depth copies (`src/cpp/gfx/draw.cpp`,
+    copies, driver blits, native blits, self-copies, self-blits and depth copies (`src/cpp/gfx/draw.cpp`,
     `src/cpp/gfx/renderer.cpp`)
   - Tests: `src/cpp/tests/gfx_native_blit_test.cpp` checks native blits against driver blits

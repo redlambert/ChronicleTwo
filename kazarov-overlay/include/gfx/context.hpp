@@ -176,7 +176,9 @@ inline constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 // Slot 0 is the null texture, 1 and 2 the two main colour images, 3 the display image (so a display render's
 // grabs can sample it, see NativeBlit); textures take the rest.
 inline constexpr uint32_t kDisplaySlot = 3;
-inline constexpr uint32_t kFirstUserSlot = 4;
+// The copy scratch image's slot, so a scaled blit within one image can be drawn from it (draw.cpp BlitScratch).
+inline constexpr uint32_t kScratchSlot = 4;
+inline constexpr uint32_t kFirstUserSlot = 5;
 
 [[noreturn]] void Fatal(const char *format, ...) __attribute__((format(printf, 1, 2)));
 void              Error(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -1344,6 +1346,8 @@ bool DepthPlanesEnabled();
 bool NativeBlitWanted();
 // Logs and resets the copy and blit counts by kind (the "timing copies" line of KZ_PERF_LOG=1).
 void LogCopyTimings();
+// Frees the copy scratch images (with the main images, when the device is idle).
+void DestroyCopyScratch();
 void SetNativeBlitForTest(bool enabled);
 void CreatePipelines();
 void DestroyPipelines();

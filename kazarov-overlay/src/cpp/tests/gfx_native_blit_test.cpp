@@ -178,6 +178,46 @@ TEST(GfxNativeBlit, DrawsAfterABlitInAFrameAreUnchanged) {
     gfx::DestroyTexture(source);
 }
 
+// A scaled blit within one image (the game's blur and glow passes) lands the same drawn from the scratch copy as
+// through the driver.
+TEST(GfxNativeBlit, SelfBlitsMatchDriverBlits) {
+    NativeBlitSwitch native;
+    GfxFixture       fixture(64, 48);
+    ASSERT_NE(gfx::detail::g.blit_pipeline, VK_NULL_HANDLE);
+    const std::array cases{
+        BlitCase{"self down linear",  {0, 0, 32, 24},  {33, 2, 7, 6},   gfx::Filter::Linear },
+        BlitCase{"self down nearest", {0, 0, 32, 24},  {33, 2, 7, 6},   gfx::Filter::Nearest},
+        BlitCase{"self up linear",    {2, 2, 8, 6},    {10, 4, 28, 20}, gfx::Filter::Linear },
+        BlitCase{"self overlap",      {4, 4, 20, 16},  {2, 2, 30, 22},  gfx::Filter::Linear },
+    };
+    for (const BlitCase &blit : cases) {
+        auto run = [&](bool use_native) {
+            gfx::detail::SetNativeBlitForTest(use_native);
+            const auto target = gfx::CreateRenderTarget(40, 30, true);
+            const auto background = Pattern(40, 30);
+            const auto fill = gfx::CreateTexture({40, 30, gfx::TextureFormat::Rgba8, 1, true});
+            EXPECT_TRUE(gfx::UpdateTexture(fill, 0, 0, 0, 40, 30, background.data()));
+            EXPECT_TRUE(gfx::CopyTexture(fill, {0, 0, 40, 30}, target, 0, 0));
+            EXPECT_TRUE(gfx::BlitTexture(target, blit.src, target, blit.dst, blit.filter));
+            std::vector<uint8_t> pixels;
+            uint32_t             width = 0;
+            uint32_t             height = 0;
+            EXPECT_TRUE(gfx::ReadbackTexture(target, pixels, width, height));
+            gfx::DestroyTexture(fill);
+            gfx::DestroyTexture(target);
+            return pixels;
+        };
+        const auto driver = run(false);
+        const auto drawn = run(true);
+        ASSERT_FALSE(driver.empty()) << blit.name;
+        if (blit.filter == gfx::Filter::Linear) {
+            EXPECT_LE(MaxDifference(driver, drawn), 2) << blit.name;
+        } else {
+            EXPECT_EQ(NearestMismatches(driver, drawn, blit, 40), 0) << blit.name;
+        }
+    }
+}
+
 // A copy within one image reuses its scratch image from one copy to the next instead of making one each time.
 TEST(GfxNativeBlit, SelfCopiesReuseTheirScratchImage) {
     GfxFixture fixture(64, 48);
