@@ -735,10 +735,23 @@ public:
             async_late_held_frames.fetch_add(1);
             return true;
         }
-        // With a present queue depth of two the pair's two images share both of its refreshes, so only their sum must
-        // fit; the replay's measured share decides, down to a lower floor, and the endpoint's copy takes the margin.
-        const float ratio = queued ? std::clamp(measured_ratio, kQueuedMinReplayRatio, kMaxReplayRatio) : replay_ratio;
-        last_held = work.canonical_ms * (1.0f + ratio) > (queued ? kQueuedBudgetMs : kBudgetMs);
+        if (queued) {
+            // A held pair renders no replay, so its share is never measured again while holding; every few held pairs
+            // one renders its intermediate anyway, so a stale share cannot keep a view at 30 once it fits.
+            if (last_held && ++held_run % kProbePairs == 0) {
+                last_held = false;
+                return false;
+            }
+            // The pair's two images share both of its refreshes, so only their sum must fit; the replay's measured
+            // share decides, down to a lower floor, and the endpoint's copy takes the margin.
+            const float ratio = std::clamp(measured_ratio, kQueuedMinReplayRatio, kMaxReplayRatio);
+            last_held = work.canonical_ms * (1.0f + ratio) > kQueuedBudgetMs;
+            if (!last_held) {
+                held_run = 0;
+            }
+            return last_held;
+        }
+        last_held = work.canonical_ms * (1.0f + replay_ratio) > kBudgetMs;
         return last_held;
     }
 
@@ -770,8 +783,10 @@ private:
     static constexpr float kMaxReplayRatio = 1.4f;
     // Queued pairs: two refreshes less the endpoint's copy and present, and a floor under the replay's share that
     // still covers a pair whose replay measured light once.
-    static constexpr float kQueuedBudgetMs = 32.5f;
+    static constexpr float kQueuedBudgetMs = 33.0f;
     static constexpr float kQueuedMinReplayRatio = 0.6f;
+    // Held queued pairs between probes: about a third of a second at 30 game frames a second.
+    static constexpr int kProbePairs = 10;
 
     Clock::time_point last_pair{};
     float             last_replay_ms = 0.0f;
@@ -779,6 +794,7 @@ private:
     float             measured_ratio = 1.1f;
     int               cpu_hold = 0;
     int               overruns = 0;
+    int               held_run = 0;
     bool              last_held = false;
 };
 
