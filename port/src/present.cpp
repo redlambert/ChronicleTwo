@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "camera_fixed.hpp"
+#include "diag/frame_trace.hpp"
 #include "exitcodes.hpp"
 #include "gfx/displaylist.hpp"
 #include "gfx/gfx.hpp"
@@ -732,9 +733,11 @@ public:
         if (cpu_hold > 0) {
             --cpu_hold;
             last_held = true;
+            last_reason = 'l';
             async_late_held_frames.fetch_add(1);
             return true;
         }
+        last_reason = 'b';
         if (queued) {
             // A held pair renders no replay, so its share is never measured again while holding; every few held pairs
             // one renders its intermediate anyway, so a stale share cannot keep a view at 30 once it fits.
@@ -796,9 +799,31 @@ private:
     int               overruns = 0;
     int               held_run = 0;
     bool              last_held = false;
+
+public:
+    // Why the last held intermediate was held, for the frame trace: b the chip budget, l late game frames.
+    char last_reason = '-';
 };
 
 IntermediateHold intermediate_hold;
+
+// The list the last end-of-frame image showed, so the frame trace can tell whether an in-between frame blends from it.
+const gfx::DisplayList *trace_last_endpoint = nullptr;
+
+void TracePresent(const Published &frame, char kind, float alpha, char hold, Clock::time_point start) {
+    const bool blends = kind == 'I' || kind == 'R';
+    frame_trace::Present({
+        .kind = kind,
+        .serial = frame.serial,
+        .alpha = alpha,
+        .previous_ok = !blends || (frame.previous != nullptr && frame.previous.get() == trace_last_endpoint),
+        .hold = hold,
+        .cpu_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count(),
+    });
+    if (!blends) {
+        trace_last_endpoint = frame.list.get();
+    }
+}
 
 // With a present queue depth of two every screen image is taken until the present before last is on screen, and a
 // frame about to present would wait for one holding the device; the idle hook waits instead, leaving the device to
@@ -872,6 +897,11 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
         const bool hold = decision.action == Action::Intermediate && intermediate_hold.Next(now);
         const bool shown = decision.action == Action::Endpoint || hold ? PresentAuthoredEndpoint(frame)
                                                                        : render_pacer.Present([&] { return RenderPublished(frame, AuthoredIntermediateAlpha(frame)); }, Clock::now);
+        if (shown && frame_trace::Enabled()) {
+            const bool endpoint = decision.action == Action::Endpoint;
+            TracePresent(frame, endpoint ? 'E' : hold ? 'H' : 'I', endpoint || hold ? 1.0f : AuthoredIntermediateAlpha(frame),
+                         hold ? intermediate_hold.last_reason : '-', now);
+        }
         if (shown) {
             render_pair.Presented(decision.action);
             if (decision.action == Action::Endpoint) {
@@ -896,6 +926,9 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
                 return due.deadline - now;
             }
             if (PresentPublishedCanonical(frame)) {
+                if (frame_trace::Enabled()) {
+                    TracePresent(frame, 'C', 1.0f, '-', now);
+                }
                 async_canonical_presents.fetch_add(1);
                 NoteAsyncPresented(Clock::now());
                 render_tick_shown = true;
@@ -917,6 +950,9 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
         if (!render_tick_shown) {
             const float alpha = frame.settings.interpolation ? std::nextafter(1.0f, 0.0f) : 1.0f;
             if (render_pacer.Present([&] { return RenderPublished(frame, alpha); }, Clock::now)) {
+                if (frame_trace::Enabled()) {
+                    TracePresent(frame, 'R', alpha, '-', now);
+                }
                 async_display_frames.fetch_add(1);
                 NoteAsyncPresented(Clock::now());
                 render_tick_shown = true;
@@ -931,6 +967,9 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
     const float alpha = PublishedAlpha(frame, now);
     if (!render_pacer.Present([&] { return RenderPublished(frame, alpha); }, Clock::now)) {
         return std::chrono::milliseconds(1);
+    }
+    if (frame_trace::Enabled()) {
+        TracePresent(frame, 'R', alpha, '-', now);
     }
 
     async_display_frames.fetch_add(1);

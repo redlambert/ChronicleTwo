@@ -186,6 +186,20 @@ double   ScreenWaitOverlapResumeMs();
 void     SetPresentQueueDepth(uint32_t depth);
 uint32_t PresentQueueDepth();
 
+// Screen frame tracking (Switch prior-Presented gate), for a frame trace: each image the gate saw reach the screen,
+// with the screen's own queue and scanout times. Times are on ScreenClockNs. Off-Switch nothing is recorded.
+struct ShownScreenFrame {
+    uint64_t id = 0;        // The screen's identifier for the image, as LastQueuedScreenFrame returned it.
+    uint64_t queued_ns = 0; // When the screen took the image.
+    uint64_t shown_ns = 0;  // When scanout of the image began.
+};
+void     SetScreenFrameTracking(bool enabled);
+// The screen's identifier for the image queued last, or 0. Device thread, right after a present.
+uint64_t LastQueuedScreenFrame();
+uint64_t ScreenClockNs();
+// Moves the shown images recorded since the last call into out. Any thread.
+void TakeShownScreenFrames(std::vector<ShownScreenFrame> &out);
+
 // Async only: called on the worker whenever its queue is empty and no lease is held or wanted. Returns how long the
 // worker may sleep before calling again; zero calls again at once. Any Dispatch, lease or WakeRenderThread wakes it
 // early. Ignored in Off and Lockstep.

@@ -500,6 +500,24 @@ struct VsyncGate {
 VsyncGate g_vsync_gate;
 /** Presents the producer may have queued and not yet shown: 1 waits for the previous present, 2 for the one before. */
 std::atomic<uint32_t> g_present_queue_depth{1};
+
+/** Shown images the gate observed, for gfx::TakeShownScreenFrames, while tracking is on. */
+std::atomic<bool>                  g_screen_tracking{false};
+std::mutex                         g_shown_mutex;
+std::vector<gfx::ShownScreenFrame> g_shown_frames;
+uint64_t                           g_shown_last_id = 0;
+
+void NoteShownScreenFrame(const NativeFrameRecord &record) {
+    if (!g_screen_tracking.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const std::scoped_lock lock(g_shown_mutex);
+    if (record.frame_number <= g_shown_last_id || g_shown_frames.size() >= 4096) {
+        return;
+    }
+    g_shown_last_id = record.frame_number;
+    g_shown_frames.push_back({.id = record.frame_number, .queued_ns = record.enqueue_ns, .shown_ns = record.presentation_ns});
+}
 /** Publishes successful native-gate activation to presentation policy readers. */
 std::atomic<bool> g_vsync_gate_active{false};
 /** Publishes successful initialization of the prior-Presented mode specifically. */
@@ -685,6 +703,7 @@ PresentedFeedbackStatus PollPresentedGate() {
     if (status == PresentedFeedbackStatus::Ready) {
         if (previous != nullptr) {
             gate.last_presented_id = previous->frame_number;
+            NoteShownScreenFrame(*previous);
         }
         gate.feedback_budget.Reset();
     }
@@ -4992,6 +5011,40 @@ uint32_t PresentQueueDepth() {
     return detail::g_present_queue_depth.load(std::memory_order_relaxed);
 #else
     return 1;
+#endif
+}
+
+void SetScreenFrameTracking(bool enabled) {
+#ifdef __SWITCH__
+    detail::g_screen_tracking.store(enabled, std::memory_order_relaxed);
+#else
+    (void)enabled;
+#endif
+}
+
+uint64_t LastQueuedScreenFrame() {
+#ifdef __SWITCH__
+    return detail::g_vsync_gate.last_accepted_id;
+#else
+    return 0;
+#endif
+}
+
+uint64_t ScreenClockNs() {
+#ifdef __SWITCH__
+    return detail::NativeHistoryClockNs();
+#else
+    return 0;
+#endif
+}
+
+void TakeShownScreenFrames(std::vector<ShownScreenFrame> &out) {
+#ifdef __SWITCH__
+    const std::scoped_lock lock(detail::g_shown_mutex);
+    out.insert(out.end(), detail::g_shown_frames.begin(), detail::g_shown_frames.end());
+    detail::g_shown_frames.clear();
+#else
+    (void)out;
 #endif
 }
 

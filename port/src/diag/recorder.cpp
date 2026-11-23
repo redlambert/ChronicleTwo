@@ -1,4 +1,5 @@
 #include "diag/recorder.hpp"
+#include "diag/frame_trace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -744,6 +745,7 @@ void FollowFlareSetting(std::string_view area) {
     if (smooth != g_smooth_pacing) {
         g_smooth_pacing = smooth;
         CT_LOG_INFO(Main, "diag: frame pacing {} (Display settings)", smooth ? "smooth, present queue depth 2" : "low latency, present queue depth 1");
+        frame_trace::Note(smooth ? "frame pacing smooth" : "frame pacing low latency");
     }
     if (overlap != g_screen_wait_overlap) {
         g_screen_wait_overlap = overlap;
@@ -798,6 +800,19 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
 
     const double frame_ms = Ms(now - g_last_tick);
     g_last_tick = now;
+    if (frame_trace::Enabled()) {
+        frame_trace::Game({
+            .area = area,
+            .frame_ms = frame_ms,
+            .logic_ms = g_parts.logic_ms,
+            .lease_ms = g_parts.lease_ms,
+            .locked_ms = g_parts.locked_ms,
+            .wait_ms = g_parts.wait_ms,
+            .ticks = g_parts.ticks,
+            .frames = g_parts.frames,
+            .draws = PresentGetStats().last_draws,
+        });
+    }
     SampleZones();
     // Read every tick, so presents made while the game sat in a pause or menu never land on one play frame.
     // A held intermediate shows its endpoint's image again, so it is no new image on screen and is not counted.

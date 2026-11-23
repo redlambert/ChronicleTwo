@@ -34,3 +34,7 @@ changed and redo these changes on the new versions.
   sets it from Display settings, Frame pacing (Smooth is 2, Low latency is 1). The depth is fixed for each admission,
   so a settings change takes effect cleanly at the next present (`include/gfx/context.hpp`, `include/gfx/gfx.hpp`,
   `src/cpp/gfx/renderer.cpp`)
+- Screen frame tracking: with `gfx::SetScreenFrameTracking(true)` the prior-Presented gate records each image it saw
+  reach the screen, with the screen's own queue and scanout times (`gfx::TakeShownScreenFrames`), and
+  `gfx::LastQueuedScreenFrame` names the image a present just queued. The port's frame trace
+  (`DC2_FRAME_TRACE=1`) writes them beside its own record of each present
