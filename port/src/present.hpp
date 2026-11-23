@@ -29,6 +29,7 @@ struct PresentStats {
     std::uint64_t canonical_presents = 0;
     std::uint64_t unfinished_pairs = 0; /**< Authored frames a newer tick replaced before both images were shown. */
     std::uint64_t held_frames = 0;      /**< Authored intermediates shown as their endpoint to stay on the vblank. */
+    std::uint64_t late_held_frames = 0; /**< Of those, intermediates held because game frames kept arriving late. */
     std::uint64_t replay_ticks = 0;     /**< Ticks presented by replay rather than as an authored pair. */
     std::uint32_t last_draws = 0;
     std::uint64_t forced_endpoints = 0;      /**< Endpoints a new tick's canonical render had to present first. */

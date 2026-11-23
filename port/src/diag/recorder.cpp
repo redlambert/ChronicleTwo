@@ -174,6 +174,7 @@ double                                          g_window_resume_start = 0.0;  //
 PresentStats                                    g_window_present_start{};
 Clock::time_point                               g_last_area_report{};
 uint64_t                                        g_presented_last = 0;
+uint64_t                                        g_held_last = 0;
 std::array<double, gfx::profile::kMaxSites>     g_zone_other_frame{}; // this tick's other-thread time per point
 bool                                            g_started = false;
 Clock::time_point                               g_last_tick{};
@@ -418,7 +419,9 @@ void LogWindow(Clock::time_point now) {
                     "frame {:.1f} (max {:.1f}); render thread waiting on the chip {:.1f} ms per game frame (max {:.1f}); "
                     "present step {:.1f} ms per game frame = handing over {:.1f} + rest {:.1f} (mostly waiting for the "
                     "screen's refresh, with the device held); getting a screen image {:.1f} ms per game frame; "
-                    "screen wait overlap {}; end-of-frame images a new tick had to present first {} (waited {:.1f} ms in all)",
+                    "screen wait overlap {}; end-of-frame images a new tick had to present first {} (waited {:.1f} ms in all); "
+                    "in-between frames shown as their end-of-frame image again {} (for the chip's budget {}, after late "
+                    "game frames {}); present queue depth {}",
                     g_area.name, g_flare_enabled ? "on" : "off",
                     g_window.flare_off_frames > 0
                         ? std::format(" (switched off in {} frames that would have drawn it)", g_window.flare_off_frames)
@@ -427,7 +430,11 @@ void LogWindow(Clock::time_point now) {
                     g_window.blend_gpu.max_ms, g_window.fence_wait.total_ms / frames, g_window.fence_wait.max_ms,
                     present_step, queue_present, std::max(present_step - queue_present, 0.0), acquire,
                     g_screen_wait_overlap ? "on" : "off", stats.forced_endpoints - g_window_present_start.forced_endpoints,
-                    stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms);
+                    stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms,
+                    stats.held_frames - g_window_present_start.held_frames,
+                    (stats.held_frames - g_window_present_start.held_frames) -
+                        (stats.late_held_frames - g_window_present_start.late_held_frames),
+                    stats.late_held_frames - g_window_present_start.late_held_frames, gfx::PresentQueueDepth());
     }
     const uint64_t immediate = mgPortImmediateDrawCount();
     const uint64_t overlap = gfx::ScreenWaitOverlapLeases();
@@ -596,6 +603,7 @@ void StartWatch(Clock::time_point now) {
         g_zone_other_last[slot] = gfx::profile::sites[slot].other_ns.load(std::memory_order_relaxed);
     }
     g_presented_last = PresentGetStats().presented;
+    g_held_last = PresentGetStats().held_frames;
     CT_LOG_INFO(Main, "diag: on (flight recorder, per-area frame and graphics-chip timing; hold Minus 1.5 s to mark); "
                       "frame parts v9: lease wait, logic, in-between frame cost, 5 s timeline with render thread, chip and present "
                       "wait, sun flare and screen wait overlap settings, area report every 30 s, worst frames named, draw parts "
@@ -792,9 +800,12 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
     g_last_tick = now;
     SampleZones();
     // Read every tick, so presents made while the game sat in a pause or menu never land on one play frame.
-    const uint64_t presented = PresentGetStats().presented;
-    const uint64_t presents = presented - g_presented_last;
-    g_presented_last = presented;
+    // A held intermediate shows its endpoint's image again, so it is no new image on screen and is not counted.
+    const PresentStats present_stats = PresentGetStats();
+    const uint64_t     held = present_stats.held_frames - g_held_last;
+    const uint64_t     presents = present_stats.presented - g_presented_last - std::min(held, present_stats.presented - g_presented_last);
+    g_presented_last = present_stats.presented;
+    g_held_last = present_stats.held_frames;
     const bool flare = g_flare_this_frame;
     g_flare_this_frame = false;
     FollowFlareSetting(area);

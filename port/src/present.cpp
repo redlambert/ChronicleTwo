@@ -131,6 +131,7 @@ std::atomic<std::uint64_t> forced_endpoints{0};
 std::atomic<std::uint64_t> forced_endpoint_wait_us{0};
 std::atomic<std::uint64_t> skipped_endpoints{0};
 std::atomic<std::uint64_t> async_held_frames{0};
+std::atomic<std::uint64_t> async_late_held_frames{0};
 
 // Device ownership serializes the idle hook and the pre-canonical endpoint retirement.
 PresentPacer                    render_pacer;
@@ -614,10 +615,12 @@ bool BetweenTicks(double fraction, Clock::time_point next_tick) {
 }
 
 // Counts a presented frame and updates the rate the FPS text shows, on the render thread.
-void NoteAsyncPresented(Clock::time_point now) {
+// fresh is false for a held intermediate, which shows its endpoint's image again: the frame counter counts only new
+// images, so a run of held frames reads as the rate it looks like.
+void NoteAsyncPresented(Clock::time_point now, bool fresh = true) {
     async_presented.fetch_add(1);
     CT_PROFILE_FRAME("Display");
-    if (render_frames.Count(now)) {
+    if (fresh && render_frames.Count(now)) {
         async_fps.store(render_frames.PerSecond());
     }
 }
@@ -720,14 +723,20 @@ public:
             overruns = 0;
         }
         last_pair = now;
+        // With a present queue depth of two the renderer runs a frame ahead, so a late game frame no longer costs the
+        // next pair its vblank, and holding would only show the endpoint twice: there only the chip budget holds.
+        const bool queued = gfx::PresentQueueDepth() >= 2;
+        if (queued) {
+            cpu_hold = 0;
+        }
         if (cpu_hold > 0) {
             --cpu_hold;
             last_held = true;
+            async_late_held_frames.fetch_add(1);
             return true;
         }
         // With a present queue depth of two the pair's two images share both of its refreshes, so only their sum must
         // fit; the replay's measured share decides, down to a lower floor, and the endpoint's copy takes the margin.
-        const bool  queued = gfx::PresentQueueDepth() >= 2;
         const float ratio = queued ? std::clamp(measured_ratio, kQueuedMinReplayRatio, kMaxReplayRatio) : replay_ratio;
         last_held = work.canonical_ms * (1.0f + ratio) > (queued ? kQueuedBudgetMs : kBudgetMs);
         return last_held;
@@ -855,7 +864,7 @@ std::chrono::steady_clock::duration PresentRenderIdle(void *) {
                 async_display_frames.fetch_add(1);
                 async_held_frames.fetch_add(hold ? 1 : 0);
             }
-            NoteAsyncPresented(Clock::now());
+            NoteAsyncPresented(Clock::now(), !hold);
         }
         TraceScheduleGuard(frame, ScheduleEvent::Outcome, shown ? ScheduleReason::Presented : ScheduleReason::Failed,
                            true, true, true, shown, decision.action, gate);
@@ -1207,6 +1216,7 @@ PresentStats PresentGetStats() {
         result.forced_endpoint_wait_ms = static_cast<double>(forced_endpoint_wait_us.load()) / 1000.0;
         result.skipped_endpoints = skipped_endpoints.load();
         result.held_frames = async_held_frames.load();
+        result.late_held_frames = async_late_held_frames.load();
     }
     return result;
 }
@@ -1221,6 +1231,7 @@ void PresentResetStats() {
     async_unfinished_pairs = 0;
     async_replay_ticks = 0;
     async_held_frames = 0;
+    async_late_held_frames = 0;
 }
 
 void PresentTickRendered() {
