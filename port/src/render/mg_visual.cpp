@@ -2076,6 +2076,7 @@ int mgCVisualMDT::Draw(u_int *tag, float (*matrix)[4], mgCDrawManager *draw_mana
             }
         }
 
+        CT_PROFILE_ZONE("Draw visual group");
         static std::vector<RunDraw> runs;
         runs.clear();
         std::shared_ptr<const mgVisualGroupMesh> geometry;
@@ -2102,21 +2103,26 @@ int mgCVisualMDT::Draw(u_int *tag, float (*matrix)[4], mgCDrawManager *draw_mana
             break;
         }
 
-        const std::size_t index = NextGroupPacket();
-        GroupPacket      &group_packet = GroupPackets().packets[index];
-        group_packet.draw = draw;
-        group_packet.runs.assign(runs.begin(), runs.end());
-        const std::uint64_t epoch = GroupPackets().epoch;
-        mgPortSetPacketDraw(packet, [index, epoch] {
-            // Registered draws are cleared with the epoch, so a matching epoch still owns this packet.
-            if (GroupPackets().epoch == epoch) {
-                const GroupPacket &deferred = GroupPackets().packets[index];
-                SubmitRuns(deferred.draw, deferred.runs);
-            }
-        });
+        {
+            CT_PROFILE_ZONE("Register visual packet");
+            const std::size_t index = NextGroupPacket();
+            GroupPacket      &group_packet = GroupPackets().packets[index];
+            group_packet.draw = draw;
+            // The pool's run vector is empty here (it is cleared with each epoch), so the runs move over instead of
+            // being copied: no reference count is taken and dropped again for every run.
+            group_packet.runs.swap(runs);
+            const std::uint64_t epoch = GroupPackets().epoch;
+            mgPortSetPacketDraw(packet, [index, epoch] {
+                // Registered draws are cleared with the epoch, so a matching epoch still owns this packet.
+                if (GroupPackets().epoch == epoch) {
+                    const GroupPacket &deferred = GroupPackets().packets[index];
+                    SubmitRuns(deferred.draw, deferred.runs);
+                }
+            });
 
-        const int block = mat->texture != nullptr ? mat->texture->block : -1;
-        draw_manager->AddPacket(block, common, packet, group->vu_program);
+            const int block = mat->texture != nullptr ? mat->texture->block : -1;
+            draw_manager->AddPacket(block, common, packet, group->vu_program);
+        }
     }
 
     return 0;

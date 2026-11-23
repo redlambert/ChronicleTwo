@@ -27,7 +27,7 @@ enum class ConfigHaptics {
 
 // video.screen_wait_overlap: whether the game may hand over its next frame while the renderer waits for the
 // screen's refresh (Kazarov gfx::SetScreenWaitOverlap). Auto turns it on in dungeons, where it keeps the game
-// at a steady pace, and off elsewhere, where waiting for the renderer is smoother.
+// at a steady pace, and elsewhere only while the game falls behind waiting for the renderer (diag/recorder.cpp).
 enum class ConfigScreenWaitOverlap {
     Off,
     On,

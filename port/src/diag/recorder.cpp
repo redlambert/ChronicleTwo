@@ -648,6 +648,75 @@ bool LensFlareEnabled() {
     return g_flare_enabled;
 }
 
+/**
+ * Auto screen wait overlap outside dungeons: on only while the game is measurably held up waiting for the renderer.
+ *
+ * With overlap off the game waits for the renderer to finish waiting for the screen before it may start its next
+ * frame. That is the smoother choice while the game has time to spare, but at Palm Brinks' busiest views the wait
+ * (up to 20 ms a frame) is what drops the game below 30 updates a second. So: once a second, if game frames ran late
+ * and the lease wait averaged enough to matter, overlap goes on; it goes off again after a few seconds without a late
+ * frame. Dungeons keep it on throughout.
+ */
+struct AutoOverlap {
+    Clock::time_point second_start{};
+    int               frames = 0;
+    int               late = 0;
+    double            lease_total = 0.0;
+    bool              on = false;
+    Clock::time_point last_late{};
+    Clock::time_point last_off{};
+    Clock::duration   hold = std::chrono::seconds(5);
+};
+
+AutoOverlap g_auto_overlap;
+
+constexpr int    kAutoLateFrames = 3;      // late game frames in a second that count as falling behind
+constexpr double kAutoLeaseMs = 5.0;       // average lease wait (ms per game frame) worth overlapping
+// How long overlap stays on after the last late frame: 5 s, doubled (up to a minute) each time turning it off
+// brings the late frames straight back, so a view that needs it does not flip it every few seconds.
+constexpr auto   kAutoHoldStart = std::chrono::seconds(5);
+constexpr auto   kAutoHoldMax = std::chrono::seconds(60);
+constexpr auto   kAutoQuickReturn = std::chrono::seconds(3);
+constexpr auto   kAutoSettled = std::chrono::seconds(30);
+
+void NoteAutoOverlap(const FrameParts &parts) {
+    AutoOverlap &a = g_auto_overlap;
+    const Clock::time_point now = Clock::now();
+    if (a.second_start == Clock::time_point{}) {
+        a.second_start = now;
+    }
+    ++a.frames;
+    a.lease_total += parts.lease_ms;
+    const bool late = parts.frames > 0 && parts.ticks > parts.frames;
+    if (late) {
+        ++a.late;
+        a.last_late = now;
+    }
+    if (now - a.second_start < std::chrono::seconds(1)) {
+        return;
+    }
+    const double lease_average = a.lease_total / std::max(a.frames, 1);
+    if (!a.on && a.late >= kAutoLateFrames && lease_average >= kAutoLeaseMs) {
+        a.on = true;
+        if (a.last_off != Clock::time_point{} && now - a.last_off <= kAutoQuickReturn) {
+            a.hold = std::min<Clock::duration>(a.hold * 2, kAutoHoldMax);
+        } else if (a.last_off == Clock::time_point{} || now - a.last_off >= kAutoSettled) {
+            a.hold = kAutoHoldStart;
+        }
+        CT_LOG_INFO(Main, "diag: auto screen wait overlap on ({} late game frames, lease wait {:.1f} ms a frame; holds {} s)",
+                    a.late, lease_average, std::chrono::duration_cast<std::chrono::seconds>(a.hold).count());
+    } else if (a.on && now - a.last_late >= a.hold) {
+        a.on = false;
+        a.last_off = now;
+        CT_LOG_INFO(Main, "diag: auto screen wait overlap off (no late game frames for {} s)",
+                    std::chrono::duration_cast<std::chrono::seconds>(a.hold).count());
+    }
+    a.second_start = now;
+    a.frames = 0;
+    a.late = 0;
+    a.lease_total = 0.0;
+}
+
 void FollowFlareSetting(std::string_view area) {
     const bool enabled = ConfigGet().lens_flare;
     if (enabled != g_flare_enabled) {
@@ -655,10 +724,11 @@ void FollowFlareSetting(std::string_view area) {
         CT_LOG_INFO(Main, "diag: sun flare setting {} (Display settings)", enabled ? "on" : "off");
         Notef("flare", "setting {}", enabled ? "on" : "off");
     }
-    // Auto: on in dungeons, where it holds the game's pace, off in towns and everywhere else.
+    // Auto: on in dungeons, where it holds the game's pace; elsewhere only while the game falls behind waiting on the
+    // renderer (NoteAutoOverlap).
     const ConfigScreenWaitOverlap mode = ConfigGet().screen_wait_overlap;
     const bool overlap = mode == ConfigScreenWaitOverlap::On ||
-                         (mode == ConfigScreenWaitOverlap::Auto && area.starts_with("dungeon"));
+                         (mode == ConfigScreenWaitOverlap::Auto && (area.starts_with("dungeon") || g_auto_overlap.on));
     gfx::SetScreenWaitOverlap(overlap);
     if (overlap != g_screen_wait_overlap) {
         g_screen_wait_overlap = overlap;
@@ -670,6 +740,7 @@ void FollowFlareSetting(std::string_view area) {
 }
 
 void NoteFrameParts(const FrameParts &parts) {
+    NoteAutoOverlap(parts);
     if (!WatchWanted()) {
         return;
     }

@@ -2350,7 +2350,14 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 }
             }
             MeshImage capture;
-            Mesh(*document, node, mesh, *visual, memory, textures, image.get(), reusable && !image ? &capture : nullptr);
+            // Split out of "Instantiate model" so a long section build frame shows which part of a model it was.
+            if (image) {
+                CT_PROFILE_ZONE("Instantiate model mesh (cached)");
+                Mesh(*document, node, mesh, *visual, memory, textures, image.get(), nullptr);
+            } else {
+                CT_PROFILE_ZONE("Instantiate model mesh");
+                Mesh(*document, node, mesh, *visual, memory, textures, nullptr, reusable ? &capture : nullptr);
+            }
             if (reusable && !image) {
                 std::lock_guard lock(mesh_images_mutex);
                 mesh_images.insert_or_assign(mesh_identity.get(),
@@ -2361,6 +2368,7 @@ mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &loa
                 motion->frame = table;
                 motion->frame_id = static_cast<int>(index);
                 motion->base_matrix = matrices;
+                CT_PROFILE_ZONE("Instantiate model skin");
                 Skin(*document, node, mesh, *motion, memory);
             }
             native[index].SetVisual(visual);

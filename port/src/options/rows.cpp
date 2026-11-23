@@ -334,7 +334,7 @@ std::vector<Page> MakePages() {
 #endif
                                 Choice<&Config::lens_flare>("video.lens_flare", "Sun flare", "The glare when the camera faces the sun.\nOff is lighter where the sun is in view.", {"Off", "On"}),
 #ifdef __SWITCH__
-                                Choice<&Config::screen_wait_overlap>("video.screen_wait_overlap", "Screen wait overlap", "Lets the game hand over its next frame while the\nscreen catches up. Auto: on in dungeons, off elsewhere.", {"Off", "On", "Auto"}),
+                                Choice<&Config::screen_wait_overlap>("video.screen_wait_overlap", "Screen wait overlap", "Lets the game hand over its next frame early.\nAuto: in dungeons, and when the game falls behind.", {"Off", "On", "Auto"}),
 #endif
                                 Choice<&Config::aspect>("video.aspect", "Aspect ratio", "Auto fills the window. 4:3 adds black side bars.", {"Auto", "4:3"}),
                                 Number<&Config::ui_scale>("video.ui_scale", "UI scale", "Scales menus and HUD. Large values can crop the UI.\nUse Left to reduce the scale if it no longer fits.", {0.5, 0.65, 0.75, 0.85, 1, 1.1, 1.25, 1.5}, 100, "%"),
