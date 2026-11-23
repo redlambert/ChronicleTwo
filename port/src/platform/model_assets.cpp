@@ -3870,12 +3870,24 @@ bool LoadCharacter(CCharacter2 &character, std::span<const std::byte> gltf, cons
 }
 
 bool Warm(const std::filesystem::path &gltf) {
+    std::shared_ptr<Document> document;
     try {
-        static_cast<void>(Read(gltf, true));
-        return true;
+        document = Read(gltf, true);
     } catch (...) {
         return false;
     }
+    // The model's texture sizes too: building it reads each external PNG's header on the game thread otherwise
+    // (Palm Brinks' bridge section spent up to 49 ms of one frame on them). ImageExtent keeps what it reads.
+    for (std::size_t index = 0; index < document->asset.images.size(); ++index) {
+        try {
+            int width = 0;
+            int height = 0;
+            ImageExtent(*document, index, width, height);
+        } catch (...) {
+            // Left for the game thread, which reports a bad image as before.
+        }
+    }
+    return true;
 }
 
 bool LoadSkin(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, std::string_view name, const CharacterLoadOptions &options, std::string &error) {

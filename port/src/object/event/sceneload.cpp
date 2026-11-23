@@ -28,6 +28,7 @@
 #include "log/log.hpp"
 #include "platform/datapacks.hpp"
 #include "platform/section_prefetch.hpp"
+#include "profile.hpp"
 #include "platform/texture_catalog.hpp"
 #include "text/bounded.hpp"
 #include "texture_source.hpp"
@@ -493,7 +494,11 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
 
         // Model packs build one model per piece: a section's main pack can hold most of its 40 or so models.
         if (state.phase == 1 && state.pack.list != nullptr) {
-            const bool pack_done = state.pack.list->StepPCPFile(state.pack);
+            bool pack_done = false;
+            {
+                CT_PROFILE_ZONE("Section build model");
+                pack_done = state.pack.list->StepPCPFile(state.pack);
+            }
             const double model_ms = SliceMs(std::chrono::steady_clock::now() - piece_start);
             state.pack_ms += model_ms;
             if (model_ms > state.longest_model_ms) {
@@ -515,7 +520,11 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
             continue;
         }
         if (state.phase == 1) {
-            const int had_pack = map->BeginDataPack(files.mpk_data, state.index, state.pack, info.stack);
+            int had_pack = 0;
+            {
+                CT_PROFILE_ZONE("Section open model pack");
+                had_pack = map->BeginDataPack(files.mpk_data, state.index, state.pack, info.stack);
+            }
             if (had_pack != 0) {
                 state.pack_ms = SliceMs(std::chrono::steady_clock::now() - piece_start);
                 if (state.pack.list == nullptr) {
@@ -525,9 +534,12 @@ bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
                 continue;
             }
         }
-        const int had = state.phase == 1 ? 0
-                                         : map->LoadDataItem(files.mpk_data, files.ipk_data, state.phase, state.index,
-                                                             &state.block, &state.info, info.stack);
+        int had = 0;
+        if (state.phase != 1) {
+            CT_PROFILE_ZONE("Section load texture item");
+            had = map->LoadDataItem(files.mpk_data, files.ipk_data, state.phase, state.index, &state.block, &state.info,
+                                    info.stack);
+        }
         if (had == 0) {
             if (state.phase == 0) {
                 state.phase = 1;

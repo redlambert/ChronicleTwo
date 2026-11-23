@@ -2042,9 +2042,29 @@ int mgCVisualMDT::Draw(u_int *tag, float (*matrix)[4], mgCDrawManager *draw_mana
             binding.wrap_v = mgPortWrapV(mat->texture->clamp_bits);
         }
 
-        GroupDraw draw;
+        // A deferred draw is written straight into its pool packet rather than built here and copied over (about
+        // 1.3 KB a group, over a thousand groups a frame in Palm Brinks' busiest views).
+        u_long128         *packet = nullptr;
+        std::size_t        packet_index = 0;
+        static GroupDraw   immediate;
+        GroupDraw         *target = &immediate;
+        if (tag == nullptr) {
+            if (draw_manager->data_memory->lock != 0 ||
+                dc2::memory::RemainingBytes(*draw_manager->data_memory).size() <= sizeof(u_long128)) {
+                break;
+            }
+            packet = draw_manager->data_memory->Alloc(1);
+            if (packet == nullptr) {
+                break;
+            }
+            packet_index = NextGroupPacket();
+            target = &GroupPackets().packets[packet_index].draw;
+        }
+        GroupDraw &draw = *target;
         draw.mesh = record.mesh;
         draw.prog0 = record.prog0;
+        // The packet may hold an earlier frame's draw: every field below is set, or reset to its default.
+        draw.palette.reset();
         if ((record.prog0.flags & gfx::kProg0Skinned) != 0) {
             draw.palette = record.palette;
         }
@@ -2056,6 +2076,11 @@ int mgCVisualMDT::Draw(u_int *tag, float (*matrix)[4], mgCDrawManager *draw_mana
         draw.state.cull = gfx::Prog0CullMode(draw.prog0);
         draw.object = object;
         draw.body = dc2::debug::DungeonStressCurrentBody();
+        draw.body_mapping = {};
+        draw.body_extent = {};
+        draw.body_outline = gfx::kNullTexture;
+        draw.body_texture_scale = 1;
+        draw.source_group = nullptr;
         if (draw.body.generation != 0) {
             CT_PROFILE_ZONE("Dungeon stress body snapshot");
             draw.body_mapping = gfx::GetLogicalMapping(gfx::kMainTarget);
@@ -2094,20 +2119,10 @@ int mgCVisualMDT::Draw(u_int *tag, float (*matrix)[4], mgCDrawManager *draw_mana
             continue;
         }
 
-        if (draw_manager->data_memory->lock != 0 ||
-            dc2::memory::RemainingBytes(*draw_manager->data_memory).size() <= sizeof(u_long128)) {
-            break;
-        }
-        u_long128 *packet = draw_manager->data_memory->Alloc(1);
-        if (packet == nullptr) {
-            break;
-        }
-
         {
             CT_PROFILE_ZONE("Register visual packet");
-            const std::size_t index = NextGroupPacket();
+            const std::size_t index = packet_index;
             GroupPacket      &group_packet = GroupPackets().packets[index];
-            group_packet.draw = draw;
             // The pool's run vector is empty here (it is cleared with each epoch), so the runs move over instead of
             // being copied: no reference count is taken and dropped again for every run.
             group_packet.runs.swap(runs);
