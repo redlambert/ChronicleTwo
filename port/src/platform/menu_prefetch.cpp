@@ -41,7 +41,7 @@ bool Wanted(std::string_view name) {
 
 } // namespace
 
-void Start() {
+void Start(std::vector<std::string> models) {
     if (running.load()) {
         return;
     }
@@ -66,9 +66,10 @@ void Start() {
         CT_LOG_WARN(Main, "menu prefetch: listing failed ({}); the menu loads as before", error.what());
         return;
     }
+    const std::size_t model_count = models.size();
     running = true;
     try {
-        worker = std::jthread([entries] {
+        worker = std::jthread([entries, models = std::move(models)] {
             try {
                 std::vector<const texture_catalog::Entry *> pointers;
                 pointers.reserve(entries->size());
@@ -80,6 +81,9 @@ void Start() {
                 }
                 model_assets::Warm(std::filesystem::path(kMenuCharacter));
                 model_assets::Warm(std::filesystem::path(kPickupEffect));
+                for (const auto &model : models) {
+                    model_assets::Warm(std::filesystem::path(model));
+                }
             } catch (...) {
                 // Not ready ahead; the menu reads them when it opens, as before.
             }
@@ -90,7 +94,8 @@ void Start() {
         CT_LOG_WARN(Main, "menu prefetch: no worker thread ({}); the menu loads as before", error.what());
         return;
     }
-    CT_LOG_INFO(Main, "menu prefetch: reading {} menu texture documents, the menu character and the pickup sparkle ahead", documents);
+    CT_LOG_INFO(Main, "menu prefetch: reading {} menu texture documents, the menu character, the pickup sparkle and {} other models ahead",
+                documents, model_count);
 }
 
 } // namespace menu_prefetch

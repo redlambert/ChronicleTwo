@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
+#include <cstring>
 #include <limits>
+#include <list>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -122,17 +124,25 @@ public:
             return true;
         }
         CT_PROFILE_TEXT(entries_[index].name.data(), entries_[index].name.size());
+        if (CopyCached(index, buffer, size)) {
+            return true;
+        }
         const frame_trace::SlowScope slow('A', entries_[index].name, 3.0);
+        bool                         read = false;
         try {
 #ifdef __SWITCH__
-            return archive_->Read(index, std::span(static_cast<std::uint8_t *>(buffer), size));
+            read = archive_->Read(index, std::span(static_cast<std::uint8_t *>(buffer), size));
 #else
             kazarov::archive_read_entry(**archive_, index, rust::Slice<std::uint8_t>(static_cast<std::uint8_t *>(buffer), size));
-            return true;
+            read = true;
 #endif
         } catch (const std::exception &) {
             return false;
         }
+        if (read) {
+            Remember(index, buffer, size);
+        }
+        return read;
     }
 
     bool ReadPrefix(std::size_t index, std::span<std::uint8_t> out) const override {
@@ -194,6 +204,70 @@ public:
     }
 
 private:
+    // Entries read a second time are kept in memory, up to these sizes. A character swap re-read the same voice
+    // samples, menu files and gameplay JSON every time (60 to 80 ms of archive reads per swap). Waiting for the
+    // second read keeps one-off reads, such as an area's textures, from pushing those out.
+    static constexpr std::size_t kCacheEntryMax = 2u * 1024u * 1024u;
+    static constexpr std::size_t kCacheBudget = 32u * 1024u * 1024u;
+
+    /**
+     * Copies a kept entry into the buffer, or gives back false when it is not kept.
+     */
+    bool CopyCached(std::size_t index, void *buffer, std::size_t size) const {
+        if (size > kCacheEntryMax) {
+            return false;
+        }
+        const std::scoped_lock lock(cache_mutex_);
+        const auto             found = cache_.find(index);
+        if (found == cache_.end() || found->second.bytes.size() != size) {
+            return false;
+        }
+        cache_order_.splice(cache_order_.begin(), cache_order_, found->second.use);
+        std::memcpy(buffer, found->second.bytes.data(), size);
+        return true;
+    }
+
+    /**
+     * Keeps an entry that has now been read twice, dropping the least recently used ones over the budget.
+     */
+    void Remember(std::size_t index, const void *buffer, std::size_t size) const {
+        if (size == 0 || size > kCacheEntryMax) {
+            return;
+        }
+        const std::scoped_lock lock(cache_mutex_);
+        if (cache_seen_.size() != entries_.size()) {
+            cache_seen_.assign(entries_.size(), false);
+        }
+        if (!cache_seen_[index]) {
+            cache_seen_[index] = true;
+            return;
+        }
+        if (cache_.contains(index)) {
+            return;
+        }
+        const auto *bytes = static_cast<const std::uint8_t *>(buffer);
+        cache_order_.push_front(index);
+        cache_.emplace(index, CachedEntry{.bytes = std::vector<std::uint8_t>(bytes, bytes + size), .use = cache_order_.begin()});
+        cache_bytes_ += size;
+        while (cache_bytes_ > kCacheBudget && !cache_order_.empty()) {
+            const auto oldest = cache_order_.back();
+            cache_order_.pop_back();
+            const auto found = cache_.find(oldest);
+            if (found != cache_.end()) {
+                cache_bytes_ -= found->second.bytes.size();
+                cache_.erase(found);
+            }
+        }
+    }
+
+    /**
+     * One kept entry's bytes and its place in the use order.
+     */
+    struct CachedEntry {
+        std::vector<std::uint8_t>        bytes; /**< The entry's uncompressed bytes. */
+        std::list<std::size_t>::iterator use;   /**< Position in cache_order_. */
+    };
+
     /**
      * One archive entry's name, location and stamp.
      */
@@ -247,6 +321,11 @@ private:
     mutable std::ifstream                                             prefix_file_;  /**< Archive handle for ReadPrefix. */
     mutable std::once_flag                                            listing_once_; /**< Builds the directory listing on first use. */
     mutable std::unordered_map<std::string, std::vector<vfs::Member>> listing_;      /**< Direct members per folded directory. */
+    mutable std::mutex                                                cache_mutex_;  /**< Guards the kept entries. */
+    mutable std::vector<bool>                                         cache_seen_;   /**< Entries read at least once. */
+    mutable std::unordered_map<std::size_t, CachedEntry>              cache_;        /**< Kept entries by index. */
+    mutable std::list<std::size_t>                                    cache_order_;  /**< Kept entries, most recently used first. */
+    mutable std::size_t                                               cache_bytes_ = 0; /**< Bytes kept. */
 };
 
 } // namespace

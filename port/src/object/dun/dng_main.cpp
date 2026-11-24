@@ -11,6 +11,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "actionchara.hpp"
 #include "automap.hpp"
@@ -391,6 +392,57 @@ namespace {
 // Game frames into a floor before the menu prefetch starts, or -1 once it has.
 constexpr int kDungeonPrefetchDelay = 60;
 int           dungeon_prefetch_frames = -1;
+
+/**
+ * Adds a model path once, giving it the .gltf extension when it lacks one.
+ */
+void AddModelPath(std::vector<std::string> &paths, std::string path) {
+    if (path.empty() || path.ends_with('/')) {
+        return;
+    }
+    if (!path.ends_with(".gltf")) {
+        path += ".gltf";
+    }
+    if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+        paths.push_back(std::move(path));
+    }
+}
+
+/**
+ * The model files a character swap reads for Max, Monica and the Ridepod with their current equipment. The first
+ * swap of a session read them on the game thread (up to 960 ms in one frame); the menu prefetch worker reads them
+ * ahead instead. Game thread only, since it reads the save data.
+ */
+std::vector<std::string> SwapModelPaths() {
+    std::vector<std::string> paths;
+    if (DngUserData == nullptr) {
+        return paths;
+    }
+    for (const int chara : {static_cast<int>(USER_CHARA_MAX), static_cast<int>(USER_CHARA_MONICA)}) {
+        CHARA_DATA *data = DngUserData->GetCharaDataPtr(chara);
+        if (data == nullptr) {
+            continue;
+        }
+        if (const auto base = MainCharaModelName(chara, 0)) {
+            AddModelPath(paths, "mainchr/" + *base);
+        }
+        for (const auto &item : data->equip) {
+            if (item.item_no > 0) {
+                if (const auto path = ItemFilePath(item.item_no, 0)) {
+                    AddModelPath(paths, *path);
+                }
+            }
+        }
+    }
+    if (const ROBO_INFO_DATA *robo = GetRoboPartsInfo(DngUserData)) {
+        for (const char *name : robo->model_name) {
+            if (name != nullptr && name[0] != 0) {
+                AddModelPath(paths, std::string("dungeon/robo/") + name);
+            }
+        }
+    }
+    return paths;
+}
 
 } // namespace
 
@@ -845,6 +897,8 @@ void InitDungeonMain(INIT_LOOP_ARG arg) {
     luau_runtime::Preload("dungeon/articles/");
     luau_runtime::Preload("dungeon/act_script/");
     luau_runtime::Preload("mainchr/");
+    // Monster scripts too: a monster's first script run cost up to 95 ms when it appeared.
+    luau_runtime::Preload("dungeon/monster/");
     dungeon_prefetch_frames = 0;
 
     NowLoadingBarSteEnd();
@@ -1008,7 +1062,7 @@ int LoopDungeonMain() {
         ++dungeon_prefetch_frames;
         if (dungeon_prefetch_frames >= kDungeonPrefetchDelay) {
             dungeon_prefetch_frames = -1;
-            menu_prefetch::Start();
+            menu_prefetch::Start(SwapModelPaths());
         }
     }
 
@@ -1925,7 +1979,10 @@ void DngStep() {
             MainChara__2->SetFloor(foot[1]);
         }
 
-        MainChara__2->Step();
+        {
+            CT_PROFILE_ZONE("Update player");
+            MainChara__2->Step();
+        }
 
         if (MainChara__2->move_check.in_water) {
             static int water_cnt = 0;
@@ -1976,14 +2033,24 @@ void DngStep() {
         }
     }
 
-    MainChara__2->StepEffect();
+    {
+        CT_PROFILE_ZONE("Update player effects");
+        MainChara__2->StepEffect();
+    }
 
     if (DngUserData->active_chr_no == USER_CHARA_ROBO) {
         VoiceUnit.Step();
     }
 
-    sgLoopSubGame2();
-    int pot = BTsubo.Step();
+    {
+        CT_PROFILE_ZONE("Update sub game");
+        sgLoopSubGame2();
+    }
+    int pot = 0;
+    {
+        CT_PROFILE_ZONE("Update pots");
+        pot = BTsubo.Step();
+    }
 
     if (pot == POT_STEP_BREAK || pot == POT_STEP_TIMEOUT) {
         if (BTsuboCol != nullptr) {
@@ -2078,9 +2145,13 @@ void DngStep() {
     BTsubo2.Step();
     sceVu0FVECTOR player;
     MainChara__2->GetPosition(player);
-    AutoMapGen.UpdateNaviMap(player, 4);
+    {
+        CT_PROFILE_ZONE("Update navigation map");
+        AutoMapGen.UpdateNaviMap(player, 4);
+    }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_AI)) {
+        CT_PROFILE_ZONE("Update monster thinking");
         ActiveMonster->ThinkHost();
     }
 
@@ -2120,6 +2191,7 @@ void DngStep() {
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_AI)) {
+        CT_PROFILE_ZONE("Update monster effect scripts");
         ActiveMonster->StepEffectScript();
     }
 
@@ -2127,7 +2199,10 @@ void DngStep() {
         FxScriptMan->PauseFromLevel(3, 3);
     }
 
-    FxScriptMan->Step();
+    {
+        CT_PROFILE_ZONE("Update effect scripts");
+        FxScriptMan->Step();
+    }
     FxScriptMan->PauseFromLevel(3, 0);
 
     for (i = 0; i < DNG_CHARA_EVENT_NUM; i++) {
@@ -2149,9 +2224,13 @@ void DngStep() {
         }
     }
 
-    ColPrimMan.Step();
+    {
+        CT_PROFILE_ZONE("Update collision shapes");
+        ColPrimMan.Step();
+    }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PLAYER_STATUS)) {
+        CT_PROFILE_ZONE("Update player damage");
         CheckStatusError();
 
         if (MainChara__2->CheckDamage()) {
@@ -2159,7 +2238,10 @@ void DngStep() {
         }
     }
 
-    ActiveMonster->CheckDamage();
+    {
+        CT_PROFILE_ZONE("Update monster damage");
+        ActiveMonster->CheckDamage();
+    }
     SwordLuminous.Step();
     LevelupInfo.Step();
     LockOnModel.Step();
@@ -2174,18 +2256,26 @@ void DngStep() {
         DamageScoreMons[d].Step();
     }
 
-    map_effect.Step(&MainCamera);
-    BattleFX.Step();
+    {
+        CT_PROFILE_ZONE("Update map effects");
+        map_effect.Step(&MainCamera);
+    }
 
-    for (int e = 0; e < DNG_ELEMENT_EFFECT_NUM; e++) {
-        Sparc_fx[e].Step();
-        thunder[e].Step();
-        tornado[e].Step();
-        chillAfterHit[e].Step();
-        fireAfterHit[e].Step();
+    {
+        CT_PROFILE_ZONE("Update battle effects");
+        BattleFX.Step();
+
+        for (int e = 0; e < DNG_ELEMENT_EFFECT_NUM; e++) {
+            Sparc_fx[e].Step();
+            thunder[e].Step();
+            tornado[e].Step();
+            chillAfterHit[e].Step();
+            fireAfterHit[e].Step();
+        }
     }
 
     if (!(BattleAreaScene->pause_flag & DNG_PAUSE_PICKUPS)) {
+        CT_PROFILE_ZONE("Update pickups");
         for (int p = 0; p < DNG_PULL_ITEM_NUM; p++) {
             PullItem[p].Step();
             PullItem[p].IsGet(player);

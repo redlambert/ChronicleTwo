@@ -314,8 +314,9 @@ void SampleZones() {
     }
 }
 
-// Game frames at least this long get their full breakdown in the frame trace.
-constexpr double kTraceLongFrameMs = 45.0;
+// Game frames at least this long get their full breakdown in the frame trace. A tick has 33.3 ms, so this catches
+// every tick that drops an image at stock clocks, not only the long hitches.
+constexpr double kTraceLongFrameMs = 36.0;
 
 const char *ZoneName(std::size_t slot) {
     const char *name = gfx::profile::sites[slot].name;
