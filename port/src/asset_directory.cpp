@@ -437,6 +437,11 @@ std::vector<dc2::assets::DirectoryMember> dc2::assets::ReadDirectoryMembers(cons
         if (!selected.empty() && selected != "texture" && selected != "commands" && extension != "." + selected) {
             continue;
         }
+        // Texture and command documents are JSON: other members (an effect directory's .em files) are not read just
+        // to be refused below.
+        if ((selected == "texture" || selected == "commands") && extension != ".json") {
+            continue;
+        }
         auto read = io::ReadResourceFile(member.path.generic_string());
         if (!read) {
             continue;

@@ -495,3 +495,14 @@ inline float mgAbs(float value) {
  * @size 0x20
  */
 unsigned int algn16_size(unsigned int size);
+
+class CMap;
+class mgCMemory;
+
+/**
+ * Port: CMap::CreateMap spread over frames for a background section. Begin takes the map's add and main map files
+ * as CreateMap does; each Continue applies parts and placements until the budget is spent and returns true once both
+ * files are in. A Begin while another build is pending drops the earlier one.
+ */
+void BeginSlicedCreateMap(CMap &map, mgCMemory &stack);
+bool ContinueSlicedCreateMap(double budget_ms);

@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -646,18 +648,50 @@ public:
      * Applies a document in the order the map script runs.
      */
     void Apply(const SceneMapDocument &document) {
-        for (const auto &part : document.parts) {
-            Part(part);
-        }
-        for (const auto &placement : document.placements) {
-            Placement(placement);
-        }
-        if (document.camera_count) {
-            Cameras(*document.camera_count, document.cameras);
-        }
-        if (document.func_points) {
-            current_parts = nullptr;
-            FuncPoints(*document.func_points, false);
+        Cursor cursor;
+        ApplySome(document, cursor, std::chrono::steady_clock::time_point::max());
+    }
+
+    /**
+     * How far ApplySome has got: the stage (parts, placements, then the rest) and the item within it.
+     */
+    struct Cursor {
+        int         stage = 0;
+        std::size_t index = 0;
+    };
+
+    /**
+     * Applies parts and placements one at a time, in script order, until the deadline passes; returns true once the
+     * whole document is applied. The loader keeps its state between calls, so a later call carries on exactly.
+     */
+    bool ApplySome(const SceneMapDocument &document, Cursor &cursor, std::chrono::steady_clock::time_point deadline) {
+        for (;;) {
+            if (cursor.stage == 0) {
+                if (cursor.index < document.parts.size()) {
+                    Part(document.parts[cursor.index++]);
+                } else {
+                    cursor = {.stage = 1, .index = 0};
+                }
+            } else if (cursor.stage == 1) {
+                if (cursor.index < document.placements.size()) {
+                    Placement(document.placements[cursor.index++]);
+                } else {
+                    cursor = {.stage = 2, .index = 0};
+                }
+            } else {
+                if (document.camera_count) {
+                    Cameras(*document.camera_count, document.cameras);
+                }
+                if (document.func_points) {
+                    current_parts = nullptr;
+                    FuncPoints(*document.func_points, false);
+                }
+                cursor.stage = 3;
+                return true;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
         }
     }
 
@@ -1221,6 +1255,87 @@ private:
 };
 
 } // namespace
+
+namespace {
+
+/**
+ * The one background CreateMap in progress: the add map file, then the main one, each applied a slice per frame.
+ */
+struct SlicedCreateMap {
+    CMap                                    *map = nullptr;
+    mgCMemory                               *memory = nullptr;
+    int                                      file = 0; // 0 the add map file, 1 the main one, 2 done
+    std::shared_ptr<const SceneMapDocument>  document;
+    std::unique_ptr<SceneMapLoader>          loader;
+    SceneMapLoader::Cursor                   cursor;
+};
+
+SlicedCreateMap sliced_create;
+
+// Opens the next map file of the pending build, as LoadMapFile begins one; false when it has none to apply.
+bool OpenSlicedFile() {
+    auto &build = sliced_create;
+    int   size = 0;
+    char *script = build.file == 0 ? build.map->map_info.GetAddMapFile(&size) : build.map->map_info.GetMapFile(&size);
+    if (build.file == 0 && (script == nullptr || size <= 0)) {
+        return false;
+    }
+    if (script == nullptr || build.memory->lock != 0) {
+        return false;
+    }
+    current_func_point = nullptr;
+    build.map->SetPieceLoadSkip(0);
+    build.document = ReadSceneMap(script);
+    if (!build.document) {
+        return false;
+    }
+    build.loader = std::make_unique<SceneMapLoader>(*build.map, *build.memory, build.file == 0);
+    build.cursor = {};
+    return true;
+}
+
+} // namespace
+
+void BeginSlicedCreateMap(CMap &map, mgCMemory &stack) {
+    sliced_create = {};
+    sliced_create.map = &map;
+    sliced_create.memory = &stack;
+}
+
+bool ContinueSlicedCreateMap(double budget_ms) {
+    auto &build = sliced_create;
+    if (build.map == nullptr) {
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::milli>(budget_ms));
+    while (build.file < 2) {
+        try {
+            if (!build.loader && !OpenSlicedFile()) {
+                ++build.file;
+                continue;
+            }
+            if (!build.loader->ApplySome(*build.document, build.cursor, deadline)) {
+                return false;
+            }
+        } catch (const std::bad_alloc &) {
+            native_config::Report("<scene map>", "insufficient map arena storage");
+        } catch (const std::length_error &error) {
+            native_config::Report("<scene map>", error.what());
+        }
+        build.loader.reset();
+        build.document.reset();
+        ++build.file;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+    }
+    if (build.file < 2) {
+        return false;
+    }
+    sliced_create = {};
+    return true;
+}
 
 void CMap::LoadMapFile(char *script, int /*length*/, mgCMemory *memory, int add_mode) {
     if (script == nullptr || memory == nullptr || memory->lock != 0) {

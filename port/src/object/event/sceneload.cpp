@@ -30,6 +30,7 @@
 #include "platform/section_prefetch.hpp"
 #include "profile.hpp"
 #include "scene_documents.hpp"
+#include "mapload.hpp"
 #include "platform/texture_catalog.hpp"
 #include "text/bounded.hpp"
 #include "texture_source.hpp"
@@ -450,6 +451,20 @@ struct SlicedDataStep {
 
 SlicedDataStep sliced_data;
 
+/**
+ * Placing parts (CMap::CreateMap) for a background section, a few milliseconds a frame (mapload.hpp): retail placed
+ * them all in one frame, 80 to 90 ms on the bridge crossing.
+ */
+struct SlicedCreateStep {
+    bool                                  active = false;
+    std::chrono::steady_clock::time_point started{};
+    int                                   frames = 0;
+    double                                longest_ms = 0.0;
+};
+
+SlicedCreateStep sliced_create_step;
+constexpr double kCreateSliceBudgetMs = 4.0;
+
 // Time a streamed section's build may take per frame; one texture or model piece is always built, however long.
 // Busy Palm Brinks frames already run 25 to 30 ms of their 33, so 8 ms per frame pushed most build frames late
 // (fix v1: the bridge crossing's 1 to 2 s of chop). A build still running after kSliceCatchUpMs goes back to the
@@ -479,6 +494,30 @@ bool SceneMapFilesReady(const SCN_LOADMAP_INFO2 &info) {
  * Builds the next pieces of the data step; returns true once every piece is built and the block counts are stored.
  *
  */
+// Returns 1 once the section's parts are placed, 0 while more remain for later frames, -1 on failure.
+int RunSlicedCreateStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
+    auto      &state = sliced_create_step;
+    const auto frame_start = std::chrono::steady_clock::now();
+    if (!state.active) {
+        if (info.place_parts_max > 0 && !map->SetPlacePartsBuff(info.stack, info.place_parts_max)) {
+            return -1;
+        }
+        BeginSlicedCreateMap(*map, *info.stack);
+        state = {.active = true, .started = frame_start};
+    }
+    const bool done = ContinueSlicedCreateMap(kCreateSliceBudgetMs);
+    ++state.frames;
+    state.longest_ms = std::max(state.longest_ms, SliceMs(std::chrono::steady_clock::now() - frame_start));
+    if (!done) {
+        return 0;
+    }
+    CT_LOG_INFO(Town, "section parts placed ({:.0f} ms per frame): {} frames over {:.0f} ms; longest frame {:.1f} ms",
+                kCreateSliceBudgetMs, state.frames, SliceMs(std::chrono::steady_clock::now() - state.started),
+                state.longest_ms);
+    state.active = false;
+    return 1;
+}
+
 bool RunSlicedDataStep(CMap *map, SCN_LOADMAP_INFO2 &info) {
     auto &state = sliced_data;
     if (!state.active) {
@@ -635,6 +674,14 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
                 return 0;
             }
             result = SCN_LOADMAP_STEP_EFFECT;
+        } else if (step == SCN_LOADMAP_STEP_CREATE_MAP) {
+            CT_PROFILE_ZONE("Section step: place parts");
+            CMap *map = GetMap(bg_load_info.map_no);
+            const int placed = map == nullptr ? -1 : RunSlicedCreateStep(map, bg_load_info);
+            if (placed == 0) {
+                return 0;
+            }
+            result = placed < 0 ? -1 : SCN_LOADMAP_STEP_FUNC_POINT;
         } else {
             // Named per step, so a long section load frame shows which step it was.
             switch (step) {
@@ -653,11 +700,6 @@ int CScene::LoadMapBGStep(SCN_LOADMAP_INFO2 *info) {
                 }
                 case SCN_LOADMAP_STEP_EFFECT: {
                     CT_PROFILE_ZONE("Section step: effects and sky");
-                    result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
-                    break;
-                }
-                case SCN_LOADMAP_STEP_CREATE_MAP: {
-                    CT_PROFILE_ZONE("Section step: place parts");
                     result = LoadMapFromMemory(bg_load_info.map_no, step, &bg_load_info);
                     break;
                 }
@@ -709,6 +751,7 @@ int CScene::LoadMap(int map_no, SCN_LOADMAP_INFO2 *info, int deferred) {
     if (deferred != 0) {
         // A new background map starts its data step from the beginning.
         sliced_data.active = false;
+        sliced_create_step.active = false;
         if (LoadMapData(*info, 1) != 0) {
             bg_load_info = *info;
             bg_load_step = 1;
