@@ -435,7 +435,9 @@ void LogWindow(Clock::time_point now) {
                     g_screen_wait_overlap ? "on" : "off", stats.forced_endpoints - g_window_present_start.forced_endpoints,
                     stats.forced_endpoint_wait_ms - g_window_present_start.forced_endpoint_wait_ms,
                     stats.held_frames - g_window_present_start.held_frames,
-                    (stats.held_frames - g_window_present_start.held_frames) -
+                    // The two counters are read at slightly different moments, so the difference is kept from wrapping.
+                    std::max<uint64_t>(stats.held_frames - g_window_present_start.held_frames,
+                                       stats.late_held_frames - g_window_present_start.late_held_frames) -
                         (stats.late_held_frames - g_window_present_start.late_held_frames),
                     stats.late_held_frames - g_window_present_start.late_held_frames, gfx::PresentQueueDepth());
     }

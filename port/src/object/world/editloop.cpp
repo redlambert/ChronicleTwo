@@ -1,4 +1,5 @@
 #include "diag/frame_trace.hpp"
+#include "platform/menu_prefetch.hpp"
 #include "common.h"
 
 #include <algorithm>
@@ -1177,6 +1178,10 @@ int EditLoop() {
     if (LoopCounter > 10000) {
         LoopCounter = 10000;
     }
+    // Port: about two seconds into the town, read the menu's heaviest textures and model ahead on a worker.
+    if (LoopCounter == 60) {
+        menu_prefetch::Start();
+    }
 
     /**
      *
@@ -1265,7 +1270,10 @@ int EditLoop() {
             sceVu0FVECTOR load_position = {1400.0f, -6.0f, -218.0f, 1.0f};
             next_sub_map = -1;
 
-            if (MainScene->LoadMapBGStep(nullptr) == 0) {
+            // Port: retail advanced the background load here as well as in SubMapLoadStep below, two load steps a
+            // frame; the frame trace showed this call alone taking 50 to 80 ms frames on the bridge crossing. It now
+            // only asks whether a load is in progress, and SubMapLoadStep advances it once a frame.
+            if (MainScene->bg_load_step != 0) {
                 line_start[0] = 1900.0f;
                 line_start[1] = 0.0f;
                 line_start[2] = 1200.0f;
