@@ -80,6 +80,14 @@ int Preload(std::string_view prefix);
 
 /**
  *
+ * Compiles every library module under scripts/lib/<directory> into the module cache, so the first require of each
+ * later costs nothing. Each directory is done once per session. Gives back how many modules it compiled.
+ *
+ */
+int PreloadLibrary(std::string_view directory);
+
+/**
+ *
  * Reports whether Luau runs this script instance.
  *
  */

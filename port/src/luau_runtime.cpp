@@ -1926,6 +1926,65 @@ int Preload(std::string_view prefix) {
     return loaded;
 }
 
+int PreloadLibrary(std::string_view directory) {
+    static std::unordered_set<std::string> done;
+    if (!done.insert(std::string(directory)).second) {
+        return 0;
+    }
+    if (EnsureState() == nullptr) {
+        return 0;
+    }
+    // The same scripts directory ReadPackedBytecode and Require use, so the cache keys match theirs.
+    std::optional<std::filesystem::path> root;
+    if (script_pack.tried) {
+        root = script_pack.root;
+    } else {
+        root = ScriptsRoot();
+    }
+    if (!root) {
+        return 0;
+    }
+    OpenScriptPack(*root);
+
+    // Paths relative to the scripts directory with forward slashes, as the pack index keeps them.
+    const std::string        prefix = "lib/" + std::string(directory);
+    std::vector<std::string> wanted;
+    if (script_pack.file != nullptr) {
+        for (const auto &[key, entry] : script_pack.modules) {
+            if (key.starts_with(prefix) && key.ends_with(".luau")) {
+                wanted.push_back(key);
+            }
+        }
+    } else {
+        std::error_code error;
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(*root / "lib" / std::string(directory), error)) {
+            if (entry.path().extension() == ".luau") {
+                wanted.push_back(entry.path().lexically_relative(*root).generic_string());
+            }
+        }
+    }
+    std::sort(wanted.begin(), wanted.end());
+
+    const auto start = std::chrono::steady_clock::now();
+    int        loaded = 0;
+    preloading = true;
+    for (const auto &key : wanted) {
+        // Built as Require builds it: the scripts directory, then lib, then the module's own path.
+        const std::filesystem::path file = *root / "lib" / key.substr(4);
+        const std::string           label = "@" + key.substr(0, key.size() - 5);
+        const int                   top = lua_gettop(state);
+        if (PushModuleFunction(state, file, label)) {
+            ++loaded;
+        }
+        lua_settop(state, top);
+    }
+    preloading = false;
+
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CT_LOG_INFO(Script, "luau: preloaded {} of {} library modules under {} in {:.0f} ms", loaded, wanted.size(), prefix, ms);
+    return loaded;
+}
+
 void Load(CRunScript *script, std::string_view module) {
     Instances().erase(script);
     auto instance = std::make_shared<Instance>();

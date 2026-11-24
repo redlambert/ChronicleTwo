@@ -899,6 +899,11 @@ void InitDungeonMain(INIT_LOOP_ARG arg) {
     luau_runtime::Preload("mainchr/");
     // Monster scripts too: a monster's first script run cost up to 95 ms when it appeared.
     luau_runtime::Preload("dungeon/monster/");
+    // The library helpers those scripts require load on first use instead: 15 monster helpers cost 210 ms when a
+    // monster first attacked, and 7 action helpers 25 ms in the first swap to Monica.
+    luau_runtime::PreloadLibrary("monster/");
+    luau_runtime::PreloadLibrary("effect/");
+    luau_runtime::PreloadLibrary("action/");
     dungeon_prefetch_frames = 0;
 
     NowLoadingBarSteEnd();

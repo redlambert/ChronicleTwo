@@ -88,6 +88,8 @@ std::unordered_map<std::string, CachedDecode> decode_cache;
 std::list<std::string> decode_uses;
 /** RGBA bytes currently held by the decode cache. */
 std::size_t decode_cache_bytes = 0;
+/** Cache keys eviction passes over, so decodes wanted much later (menu pages) outlast a long dungeon visit. */
+std::unordered_set<std::string> pinned_decodes;
 
 /** Guards the path memos and the stamp memo. */
 std::mutex memo_mutex;
@@ -186,11 +188,17 @@ void CacheInsert(const std::string &key, std::shared_ptr<const DecodedTexture> t
         decode_uses.splice(decode_uses.begin(), decode_uses, found->second.use);
         return;
     }
-    while (decode_cache_bytes + bytes > kDecodeCacheBytes && !decode_uses.empty()) {
-        const auto oldest = decode_cache.find(decode_uses.back());
+    // Oldest first, passing over pinned decodes; when only pinned ones are left the cache runs over its budget.
+    auto use = decode_uses.end();
+    while (decode_cache_bytes + bytes > kDecodeCacheBytes && use != decode_uses.begin()) {
+        --use;
+        if (pinned_decodes.contains(*use)) {
+            continue;
+        }
+        const auto oldest = decode_cache.find(*use);
         decode_cache_bytes -= oldest->second.bytes;
         decode_cache.erase(oldest);
-        decode_uses.pop_back();
+        use = decode_uses.erase(use);
         ++evictions;
     }
     decode_uses.push_front(key);
@@ -787,6 +795,36 @@ void PrefetchEntries(std::span<const texture_catalog::Entry *const> entries) {
     if (!jobs.empty()) {
         Prefetch(jobs);
     }
+}
+
+std::size_t PinEntries(std::span<const texture_catalog::Entry *const> entries) {
+    std::vector<std::string> keys;
+    for (const auto *entry : entries) {
+        if (entry->no_image || !ValidRgbaEntry(*entry)) {
+            continue;
+        }
+        for (std::size_t variant = 0; variant < entry->variants.size(); ++variant) {
+            if (!entry->variants[variant].levels.empty()) {
+                keys.push_back(DecodeKey(*entry, variant));
+            }
+        }
+    }
+    const std::scoped_lock lock(decode_mutex);
+    for (auto &key : keys) {
+        pinned_decodes.insert(std::move(key));
+    }
+    return pinned_decodes.size();
+}
+
+std::size_t PinnedDecodeBytes() {
+    const std::scoped_lock lock(decode_mutex);
+    std::size_t            bytes = 0;
+    for (const auto &key : pinned_decodes) {
+        if (const auto found = decode_cache.find(key); found != decode_cache.end()) {
+            bytes += found->second.bytes;
+        }
+    }
+    return bytes;
 }
 
 std::string ImageDecodeKey(std::string_view identity, std::span<const vfs::Ref> sources) {

@@ -89,7 +89,12 @@ void Start(std::vector<std::string> models) {
                     pointers.push_back(&entry);
                 }
                 if (!pointers.empty()) {
+                    // Pinned first: a menu opened minutes into a floor found these evicted and decoded them on the
+                    // game thread again (22 to 41 ms a page).
+                    const std::size_t pinned = datapacks::PinEntries(pointers);
                     datapacks::PrefetchEntries(pointers);
+                    CT_LOG_INFO(Main, "menu prefetch: {} menu decodes kept for the session, {:.1f} MB",
+                                pinned, static_cast<double>(datapacks::PinnedDecodeBytes()) / 1048576.0);
                 }
                 model_assets::Warm(std::filesystem::path(kMenuCharacter));
                 model_assets::Warm(std::filesystem::path(kPickupEffect));

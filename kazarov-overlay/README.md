@@ -38,3 +38,7 @@ changed and redo these changes on the new versions.
   reach the screen, with the screen's own queue and scanout times (`gfx::TakeShownScreenFrames`), and
   `gfx::LastQueuedScreenFrame` names the image a present just queued. The port's frame trace
   (`DC2_FRAME_TRACE=1`) writes them beside its own record of each present
+- Outline body tiles: a tick render cuts each large outline body composite to the 16-unit cells its meshes touch, as
+  the offset copies already were, when nothing later reads the main target's alpha and the body writes no depth.
+  The body's empty texels blend to the pixel already there, so the picture is the same. `KZ_OUTLINE_BODY_TILES=0`
+  turns it off (`src/cpp/gfx/displaylist.cpp`)

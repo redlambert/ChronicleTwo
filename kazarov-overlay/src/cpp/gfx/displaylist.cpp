@@ -2511,6 +2511,32 @@ bool OutlineTilesEnabled() {
 }
 
 /**
+ * Reports whether tick renders may cut outline bodies to their meshes' cells where nothing reads the main alpha.
+ */
+bool OutlineBodyTilesEnabled() {
+    static const bool enabled = [] {
+        const char *setting = std::getenv("KZ_OUTLINE_BODY_TILES");
+#ifdef __SWITCH__
+        return setting == nullptr || std::strcmp(setting, "0") != 0;
+#else
+        return setting != nullptr && std::strcmp(setting, "1") == 0;
+#endif
+    }();
+    return enabled;
+}
+
+/**
+ * Reports whether a body composite's empty texels leave the target as it was: a source-over quad sampling its
+ * region's own image, with no depth writes, stencil or alpha test.
+ */
+bool OutlineBodyTileable(const Draw2DEntry &draw, const DrawState &state, const PresentationRegion &region) {
+    return draw.primitive == Primitive::Quads && draw.binding.texture == region.source && !draw.binding.ignore_alpha &&
+           draw.binding.palette == kNullTexture && state.blend && state.alpha.a == 0 && state.alpha.b == 1 &&
+           state.alpha.c == 0 && state.alpha.d == 1 && !state.depth_write && !state.stencil_test &&
+           (!state.alpha_test || state.alpha_func == AlphaFunc::Always);
+}
+
+/**
  * Cuts an offset copy of a region's image down to the grid cells its meshes touch.
  *
  * Everywhere else the image is empty, so a copy there would shade and blend nothing.
@@ -3217,6 +3243,8 @@ void Replay(const DisplayList &list, bool canonical, const Overrides *overrides,
     size_t                  additive_run = 0;
     PrewarmAdditiveLayer();
     const size_t dead_alpha_from = !canonical && DeadAlphaResetsEnabled() ? FirstDeadMainAlpha(list) : list.entries.size();
+    // A tick render's outline bodies may be cut to their meshes' cells only past the last read of the main alpha.
+    const size_t body_dead_alpha_from = canonical && OutlineTilesEnabled() && OutlineBodyTilesEnabled() ? FirstDeadMainAlpha(list) : list.entries.size();
     for (size_t step = 0; step < list.entries.size(); step++) {
         const size_t index = additive_layers.order.empty() ? step : additive_layers.order[step];
         const Entry &entry = list.entries[index];
@@ -3323,11 +3351,19 @@ void Replay(const DisplayList &list, bool canonical, const Overrides *overrides,
                         }
                         alpha_footprint.Invalidate(CurrentRenderTarget());
                     }
-                    // Only the copies: the body overwrites the region's alpha, which it must do everywhere.
+                    // The copies always. The body overwrites the region's alpha, which it must do everywhere, unless
+                    // nothing reads the main alpha after it: then a tick render's body is cut to its meshes' cells
+                    // too, since its empty texels blend to the pixel already there and it writes no depth.
                     static thread_local std::vector<Vertex2D> tiled;
+                    const bool offset_copy = vertices.size() == 4 && (vertices[0].x != vertices[0].u || vertices[0].y != vertices[0].v);
+                    const bool in_region = e.presentation_region >= 0 &&
+                                           static_cast<size_t>(e.presentation_region) < presentation_coverage.size();
+                    const bool body_tile = canonical && in_region && !offset_copy && index >= body_dead_alpha_from &&
+                                           CurrentRenderTarget() == kMainTarget &&
+                                           OutlineBodyTileable(e, tested, list.presentation_regions[static_cast<size_t>(e.presentation_region)]);
                     if (OutlineTilesEnabled() && e.presentation_region >= 0 && !e.region_alpha_reset && !e.presentation_only &&
                         static_cast<size_t>(e.presentation_region) < presentation_coverage.size() && vertices.size() == 4 &&
-                        (vertices[0].x != vertices[0].u || vertices[0].y != vertices[0].v) &&
+                        (offset_copy || body_tile) &&
                         presentation_coverage[static_cast<size_t>(e.presentation_region)].parts_valid) {
                         TileRegionCopy(vertices, presentation_coverage[static_cast<size_t>(e.presentation_region)].parts, tiled);
                         if (tiled.empty()) {

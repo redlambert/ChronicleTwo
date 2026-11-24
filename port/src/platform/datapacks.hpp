@@ -143,6 +143,17 @@ void Prefetch(std::span<DecodeJob> jobs);
 void PrefetchEntries(std::span<const texture_catalog::Entry *const> entries);
 
 /**
+ * Keeps the decodes of these catalog textures in the decode cache for the rest of the session: eviction passes over
+ * them. Gives back how many decodes are pinned in all.
+ */
+std::size_t PinEntries(std::span<const texture_catalog::Entry *const> entries);
+
+/**
+ * The RGBA bytes the pinned decodes now hold in the decode cache.
+ */
+std::size_t PinnedDecodeBytes();
+
+/**
  * Memoises the source-file stamps ImageDecodeKey reads while alive; the memo clears when the outermost scope ends.
  */
 struct StampScope {
