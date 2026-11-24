@@ -3285,6 +3285,7 @@ void Replay(const DisplayList &list, bool canonical, const Overrides *overrides,
                     }
                     std::span<const Vertex2D> vertices = e.vertices;
                     std::array<Vertex2D, 4>   bounded_vertices;
+                    DrawState                 bounded_state;
                     const DrawState          *state = &e.state;
                     UiSide                    side = e.side;
                     if (!canonical && !e.presentation_vertices.empty()) {
@@ -3302,6 +3303,19 @@ void Replay(const DisplayList &list, bool canonical, const Overrides *overrides,
                             vertices = bounded_vertices;
                         }
                         state = &e.presentation_state;
+                        if (state->outline_composite && coverage != nullptr && coverage->bounded) {
+                            // The scratch image is cleared only around the bounded rectangle; a one-pass composite's
+                            // shifted samples must not reach past it into an earlier object's pixels.
+                            bounded_state = *state;
+                            const LogicalRect &box = bounded_state.outline_box;
+                            const LogicalRect &rect = coverage->rect;
+                            const float        left = std::max(box.x, rect.x);
+                            const float        top = std::max(box.y, rect.y);
+                            const float        right = std::min(box.x + box.w, rect.x + rect.w);
+                            const float        bottom = std::min(box.y + box.h, rect.y + rect.h);
+                            bounded_state.outline_box = {left, top, std::max(0.0f, right - left), std::max(0.0f, bottom - top)};
+                            state = &bounded_state;
+                        }
                         // Composite replacements are in target space, independent of the original UI box.
                         side = {};
                     } else if (overrides != nullptr) {

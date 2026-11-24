@@ -8135,6 +8135,9 @@ int  windup_request = -1;
 int  windup_ticks = 0;
 int  windup_loop = -1;
 int  windup_poll_frame = -1;
+// Set when the glow-up's last tick started the cream sparkle, so it is already playing in the image the screen
+// holds while the swap loads, and carries on over the new character instead of starting again after it.
+bool windup_sparked = false;
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
@@ -8351,6 +8354,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
             windup_ready = false;
             windup_request = -1;
             windup_sounded = false;
+            windup_sparked = false;
             return -1;
         }
 
@@ -8371,6 +8375,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 
     windup_active = true;
     windup_ready = false;
+    windup_sparked = false;
     windup_request = request;
     windup_ticks = 0;
     windup_loop = PortLoopNo;
@@ -8387,6 +8392,21 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 }
 
 namespace {
+
+/**
+ * Starts the dungeon's cream item-use sparkle on the player; false where there is none (towns, or not loaded).
+ * The by-name CreateEffSpt returns the owner slot, which is -1 for an effect not registered to one, so success is
+ * read from the effect itself.
+ */
+bool StartChangeSparkle() {
+    if (PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr ||
+        FxScriptMan->CreateEffSpt(FxScriptMan->SearchBaseNo(kChangeEffectName), 0, 0) == nullptr) {
+        return false;
+    }
+    FxScriptMan->SetScriptTargetId(0, -1, -1);
+    FxScriptMan->SetValue(0, kChangeEffectCream, 0, -1);
+    return true;
+}
 
 /**
  * Raises the current character's power-up glow while a wind-up runs, and drops a wind-up that stopped being polled.
@@ -8406,6 +8426,7 @@ void StepQuickChangeWindUp() {
         windup_ready = false;
         windup_request = -1;
         windup_sounded = false;
+        windup_sparked = false;
         return;
     }
 
@@ -8417,6 +8438,12 @@ void StepQuickChangeWindUp() {
     fade.elapsed = windup_ticks;
 
     if (windup_ticks >= kWindUpTicks) {
+        if (!windup_ready && !windup_sparked) {
+            // The snap: the sparkle bursts on the fully lit character one tick before the swap, so the frame the
+            // screen holds through the swap's pause shows it at its start. It targets the player, so it stays on
+            // the character that stands there after the swap.
+            windup_sparked = StartChangeSparkle();
+        }
         windup_ready = true;
     }
 }
@@ -8528,17 +8555,16 @@ void PortStepQuickChangeEffect() {
         change_fade_frames = kChangeFadeFrames;
 
         // The dungeon loads the item-use effect with the floor (dc2::dungeon setup); town has none, so a town
-        // swap shows the glow alone. Started after the swap, it follows the character that now stands there.
-        // The by-name CreateEffSpt returns the owner slot, which is -1 for an effect not registered to one, so
-        // success is read from the effect itself.
-        if (PortLoopNo == LOOP_DUNGEON && FxScriptMan != nullptr &&
-            FxScriptMan->CreateEffSpt(FxScriptMan->SearchBaseNo(kChangeEffectName), 0, 0) != nullptr) {
-            FxScriptMan->SetScriptTargetId(0, -1, -1);
-            FxScriptMan->SetValue(0, kChangeEffectCream, 0, -1);
+        // swap shows the glow alone. A glow-up already started it on its last tick; otherwise (a swap from the
+        // menu) it starts now and follows the character that now stands there.
+        const bool sparked = windup_sparked;
+        windup_sparked = false;
+        if (sparked || StartChangeSparkle()) {
             static bool logged = false;
             if (!logged) {
                 logged = true;
-                CT_LOG_INFO(Menu, "quick change: new character gets the cream sparkle");
+                CT_LOG_INFO(Menu, "quick change: cream sparkle {}", sparked ? "started with the glow's last tick, held through the swap"
+                                                                                  : "started on the new character");
             }
         }
     }

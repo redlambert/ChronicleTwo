@@ -1215,6 +1215,18 @@ gfx::DrawState TargetDrawState(gfx::DrawState state) {
     return state;
 }
 
+/**
+ * Moves a one-pass outline composite's sample box and offset onto a scaled source, as ScaleVertices moves u and v.
+ */
+gfx::DrawState ScaleOutlineSource(gfx::DrawState state, float source_scale) {
+    if (state.outline_composite) {
+        auto &box = state.outline_box;
+        box = {.x = box.x * source_scale, .y = box.y * source_scale, .w = box.w * source_scale, .h = box.h * source_scale};
+        state.outline_offset *= source_scale;
+    }
+    return state;
+}
+
 std::vector<gfx::Vertex2D> ScaleVertices(std::span<const gfx::Vertex2D> vertices, float target_scale,
                                          float source_scale) {
     std::vector<gfx::Vertex2D> scaled(vertices.begin(), vertices.end());
@@ -1885,9 +1897,10 @@ void mgPortDraw2D(gfx::Primitive primitive, std::span<const gfx::Vertex2D> verti
     if (presentation) {
         presentation_vertices = ScaleVertices(presentation->vertices, target_scale, source_scale);
         scaled_presentation.vertices = presentation_vertices;
-        scaled_presentation.state = TargetDrawState(presentation->state);
+        scaled_presentation.state = ScaleOutlineSource(TargetDrawState(presentation->state), source_scale);
     }
-    gfx::Draw2D(primitive, scaled, texture, TargetDrawState(state), presentation ? &scaled_presentation : nullptr);
+    gfx::Draw2D(primitive, scaled, texture, ScaleOutlineSource(TargetDrawState(state), source_scale),
+                presentation ? &scaled_presentation : nullptr);
 }
 
 void mgPortDrawMesh(gfx::MeshHandle mesh, uint32_t first_index, uint32_t index_count,

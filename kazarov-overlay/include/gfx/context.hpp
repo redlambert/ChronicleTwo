@@ -914,6 +914,8 @@ inline constexpr uint32_t kProg0NearSafeUnlitVertexScope = UINT32_MAX - 23;
 inline constexpr uint32_t kProg0Mode1UnlitVertexScope = UINT32_MAX - 24;
 /** Shared-input guarded zero with rigid unlit vertex evaluation. */
 inline constexpr uint32_t kProg0GuardedUnlitVertexScope = UINT32_MAX - 25;
+/** The one-pass outline composite: a body and its four offset copies in one draw. */
+inline constexpr uint32_t kOutlineCompositeScope = UINT32_MAX - 26;
 
 /**
  * Selects an identity-bound diagnostic which deliberately suppresses matched RGB.
@@ -1089,6 +1091,8 @@ struct Context {
     uint32_t                 pipeline_count = 0;
     // KZ_DEPTH_PLANES: the depth-bounds colour pass; null when off, unsupported or unbindless.
     VkPipeline                    depth_planes_pipeline = VK_NULL_HANDLE;
+    // DrawState::outline_composite: draw2d.vert and outline_composite.frag, dual-source blended; null when unbindless.
+    VkPipeline                    outline_composite_pipeline = VK_NULL_HANDLE;
     VkPipeline                    blit_pipeline = VK_NULL_HANDLE; // NativeBlit: colour blits drawn, not vkCmdBlitImage
     bool                          depth_bounds = false; // the device's depthBounds feature is enabled
     bool                          depth_blit = false;   // the depth format blits as source and destination

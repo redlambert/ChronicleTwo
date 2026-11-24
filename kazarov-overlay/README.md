@@ -42,3 +42,11 @@ changed and redo these changes on the new versions.
   the offset copies already were, when nothing later reads the main target's alpha and the body writes no depth.
   The body's empty texels blend to the pixel already there, so the picture is the same. `KZ_OUTLINE_BODY_TILES=0`
   turns it off (`src/cpp/gfx/displaylist.cpp`)
+- One-pass outline composite: a 2D draw with `DrawState::outline_composite` draws an outline image's four offset
+  copies and its body in one pass (`outline_composite.frag`, dual-source blended), so the target is read and
+  written once instead of five times. Each layer covers only the pixels whose sample lands inside
+  `DrawState::outline_box`, as its own quad would; a bounded display render narrows that box to the region's
+  cleared rectangle. `gfx::OutlineCompositeAvailable` reports whether it is on (it needs the bindless path); the
+  port turns it off with `DC2_OUTLINE_ONE_PASS=0` (`include/gfx/gfx.hpp`, `include/gfx/context.hpp`,
+  `src/cpp/gfx/draw.cpp`, `src/cpp/gfx/pipelines.cpp`, `src/cpp/gfx/displaylist.cpp`,
+  `src/cpp/gfx/shaders/draw_body.glsl`, `src/cpp/gfx/shaders/outline_composite.frag`)

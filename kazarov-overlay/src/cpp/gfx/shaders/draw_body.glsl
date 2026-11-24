@@ -150,6 +150,87 @@ vec4 SampleRgba() {
     return t;
 }
 
+#ifdef KZ_OUTLINE_COMPOSITE
+// SampleRgba at any point of the image rather than at v_uv.
+vec4 SampleRgbaAt(vec2 uv) {
+    // The layers sample inside branches; the outline image has one level, so an explicit one changes nothing.
+    vec4 t = textureLod(TEXTURE, uv, 0.0);
+    uint flags = ColorFlags();
+    if ((flags & kTexa) != 0u) {
+        float ta0 = float(pc.alpha >> 24) / 128.0;
+        bool  aem = (flags & kAem) != 0u;
+        if (aem && (pc.flags & kLinear) != 0u) {
+            vec2 size = vec2(textureSize(TEXTURE, 0));
+            vec2 corner = (floor(uv * size - 0.5) + 1.0) / size;
+            vec2 f = fract(uv * size - 0.5);
+            vec4 mask;
+            if ((pc.flags & kAemMask) != 0u) {
+                mask = textureGather(AEM_MASK, corner, 0);
+            } else {
+                vec4 sum = textureGather(TEXTURE, corner, 0) + textureGather(TEXTURE, corner, 1) + textureGather(TEXTURE, corner, 2);
+                mask = vec4(greaterThan(sum, vec4(0.0)));
+            }
+            t.a = Bilerp(mask * ta0, f);
+        } else {
+            t.a = aem && t.r + t.g + t.b == 0.0 ? 0.0 : ta0;
+        }
+    }
+    return t;
+}
+
+// One layer as the GS draws it: the texel modulated by the layer's vertex colour, colour and blend factor in the
+// attachment's [0, 1].
+vec4 CompositeLayer(vec2 uv, vec4 colour) {
+    vec4 t = SampleRgbaAt(uv);
+    return clamp(vec4(t.rgb * colour.rgb * kModulate, t.a * colour.a * kModulate), 0.0, 1.0);
+}
+
+bool InsideBox(vec2 uv, vec2 box_min, vec2 box_max) {
+    return all(greaterThanEqual(uv, box_min)) && all(lessThan(uv, box_max));
+}
+
+// The copies at +x, -x, +y and -y, then the body, each source-over the one before: the colour leaves premultiplied
+// and the second source says how much of the target shows through. A layer covers a pixel only where its sample
+// lands inside the box, as its own quad would. Alpha is the last covering layer's, as the GS writes it, or the
+// target's where none covers.
+void OutlineComposite() {
+    vec2 offset = vec2(uintBitsToFloat(pc.face), uintBitsToFloat(pc.palette_index));
+    vec2 box_min = unpackUnorm2x16(pc.mesh_index);
+    vec2 box_max = unpackUnorm2x16(pc.prog0_index);
+    vec4 edge = unpackUnorm4x8(pc.fog_color);
+    vec2 shifts[4] = vec2[4](vec2(offset.x, 0.0), vec2(-offset.x, 0.0), vec2(0.0, offset.y), vec2(0.0, -offset.y));
+
+    vec3  premultiplied = vec3(0.0);
+    float through = 1.0;
+    float alpha = 0.0;
+    bool  covered = false;
+    for (int i = 0; i < 4; ++i) {
+        vec2 source = v_uv - shifts[i];
+        if (InsideBox(source, box_min, box_max)) {
+            vec4 layer = CompositeLayer(source, edge);
+            premultiplied = layer.rgb * layer.a + premultiplied * (1.0 - layer.a);
+            through *= 1.0 - layer.a;
+            alpha = layer.a;
+            covered = true;
+        }
+    }
+    if (InsideBox(v_uv, box_min, box_max)) {
+        vec4 layer = CompositeLayer(v_uv, COLOR_INPUT);
+        premultiplied = layer.rgb * layer.a + premultiplied * (1.0 - layer.a);
+        through *= 1.0 - layer.a;
+        alpha = layer.a;
+        covered = true;
+    }
+    if ((pc.flags & kOpaqueTarget) != 0u) {
+        alpha = 1.0;
+    }
+    o_color = vec4(premultiplied, covered ? alpha : 0.0);
+#ifndef KZ_SINGLE_SOURCE
+    o_factor = vec4(vec3(through), covered ? 0.0 : 1.0);
+#endif
+}
+#endif
+
 bool AlphaPasses(float alpha) {
     uint func = kAlphaFunction >= 0 ? uint(kAlphaFunction) : (pc.alpha >> 8) & 7u;
     // Internal RGB-only source-over specialization: tiny positive alpha must survive.
@@ -179,6 +260,10 @@ bool AlphaPasses(float alpha) {
 }
 
 void main() {
+#ifdef KZ_OUTLINE_COMPOSITE
+    OutlineComposite();
+    return;
+#endif
 #ifdef KZ_ALPHA_ONLY
     vec4  t = SampleRgba();
     float alpha = t.a * COLOR_INPUT.a * kModulate;

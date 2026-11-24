@@ -26,6 +26,7 @@
 #include "shaders/depth_planes.frag.spv.hpp"
 #include "shaders/draw.frag.spv.hpp"
 #include "shaders/draw2d.vert.spv.hpp"
+#include "shaders/outline_composite.frag.spv.hpp"
 #include "shaders/draw_alpha_only_single.frag.spv.hpp"
 #include "shaders/draw_bound.frag.spv.hpp"
 #include "shaders/draw_bound_alpha_only_single.frag.spv.hpp"
@@ -698,6 +699,7 @@ void LogShaderStats() {
          {kProg0Mode1AlphaOnlyScope, g.prog0_rgb_cost_pipelines[3]},
          {kDepthPlanesScope, g.depth_planes_pipeline},
          {kZeroAlphaNoopScope, g.zero_alpha_noop_pipeline},
+         {kOutlineCompositeScope, g.outline_composite_pipeline},
          }
     };
     for (uint32_t index = 0; index < g.pipelines.size() + extras.size(); index++) {
@@ -1410,6 +1412,60 @@ void CreatePipelines() {
         }
         vkDestroyShaderModule(g.device, planes_module, nullptr);
     }
+    // The one-pass outline composite: draw2d.vert and outline_composite.frag over the shared layout. The shader folds
+    // an outline image's four offset copies and its body into one premultiplied colour; the second source holds how
+    // much of the target shows through it, so the target is read and written once instead of five times. Alpha
+    // takes the last covering layer's, as the GS writes it, or keeps the target's where no layer covers.
+    if (g.bindless) {
+        VkShaderModule                  composite_module = CreateShader(outline_composite_frag, sizeof(outline_composite_frag));
+        VkPipelineShaderStageCreateInfo composite_stages[2] = {};
+        composite_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        composite_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        composite_stages[0].module = draw2d_module;
+        composite_stages[0].pName = "main";
+        composite_stages[1] = composite_stages[0];
+        composite_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        composite_stages[1].module = composite_module;
+        VkPipelineColorBlendAttachmentState composite_attachment = {};
+        composite_attachment.blendEnable = VK_TRUE;
+        composite_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        composite_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC1_COLOR;
+        composite_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        composite_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        composite_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_SRC1_ALPHA;
+        composite_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        composite_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo composite_blend = {};
+        composite_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        composite_blend.attachmentCount = 1;
+        composite_blend.pAttachments = &composite_attachment;
+        VkGraphicsPipelineCreateInfo composite = {};
+        composite.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        if (ShaderStatsSelected(DescribePipeline(kOutlineCompositeScope))) {
+            composite.flags = VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+                              VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+        }
+        composite.pNext = &rendering;
+        composite.stageCount = 2;
+        composite.pStages = composite_stages;
+        composite.pVertexInputState = &vertex_2d;
+        composite.pInputAssemblyState = &triangles;
+        composite.pViewportState = &viewport;
+        composite.pRasterizationState = &raster;
+        composite.pMultisampleState = &multisample;
+        composite.pDepthStencilState = &depth;
+        composite.pColorBlendState = &composite_blend;
+        composite.pDynamicState = &dynamic;
+        composite.layout = g.pipeline_layout;
+        VkResult result = create_pipeline(composite, g.outline_composite_pipeline);
+        if (result != VK_SUCCESS) {
+            g.outline_composite_pipeline = VK_NULL_HANDLE;
+            kz::Logf(kz::LogLevel::Info, "gfx", "outline composite: the pipeline failed ({}); outlines draw their copies one by one",
+                     static_cast<int>(result));
+        }
+        vkDestroyShaderModule(g.device, composite_module, nullptr);
+    }
     // NativeBlit's pipeline: a colour blit drawn into the destination alone (no depth attachment), so a scaled
     // grab costs one draw instead of the driver's own blit, which on NVK is a meta draw that saves and restores
     // every piece of state around itself. No vertex input (blit.vert places a strip on the viewport), no blend,
@@ -1630,6 +1686,10 @@ void DestroyPipelines() {
         vkDestroyPipeline(g.device, g.depth_planes_pipeline, nullptr);
         g.depth_planes_pipeline = VK_NULL_HANDLE;
     }
+    if (g.outline_composite_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g.device, g.outline_composite_pipeline, nullptr);
+        g.outline_composite_pipeline = VK_NULL_HANDLE;
+    }
     if (g.blit_pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(g.device, g.blit_pipeline, nullptr);
         g.blit_pipeline = VK_NULL_HANDLE;
@@ -1651,6 +1711,9 @@ std::string DescribePipeline(uint32_t index) {
     }
     if (index == kDepthPlanesScope) {
         return "depth-planes";
+    }
+    if (index == kOutlineCompositeScope) {
+        return "2d-outline-one-pass";
     }
     if (index == kZeroAlphaNoopScope) {
         return "2d-zero-alpha-noop";

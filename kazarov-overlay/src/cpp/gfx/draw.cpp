@@ -27,6 +27,16 @@ namespace {
 
 constexpr uint32_t kSlotMask = 0xFFFF;
 
+/**
+ * Packs two values in [0, 1] as GLSL's packUnorm2x16 does: the first in the low half.
+ */
+uint32_t PackUnorm2x16(float first, float second) {
+    const auto unorm = [](float value) {
+        return static_cast<uint32_t>(std::lround(std::clamp(value, 0.0f, 1.0f) * 65535.0f));
+    };
+    return unorm(first) | unorm(second) << 16;
+}
+
 bool InlineMeshDispatchEnabled() {
     static const bool enabled = [] {
         const char *value = std::getenv("KZ_INLINE_MESH_DISPATCH");
@@ -760,6 +770,11 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
         selected_pipeline = g.depth_planes_pipeline;
         scope_pipeline = kDepthPlanesScope;
     }
+    if (state.outline_composite && g.outline_composite_pipeline != VK_NULL_HANDLE && tls.plane_draw == nullptr &&
+        family == kFamily2DTriangles && mode == kTextureRgba && writes_color) {
+        selected_pipeline = g.outline_composite_pipeline;
+        scope_pipeline = kOutlineCompositeScope;
+    }
     if (g.prog0_shared_rgb && (scope_pipeline == kProg0NearSafeFogAdditiveBlackScope || scope_pipeline == kProg0Mode1FogBlackScope || scope_pipeline == kProg0GuardedZeroSourceAlphaScope) &&
         family == kFamilyMeshProg0 && mesh_constants != nullptr && prog0 != nullptr &&
         state.prog0_face == 0 && (prog0->flags == kProg0Unlit || prog0->flags == (kProg0Unlit | kProg0Clip | kProg0Scissor))) {
@@ -973,6 +988,17 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
                  static_cast<uint32_t>(state.alpha.fix) << 16 | static_cast<uint32_t>(state.texa_ta0) << 24;
     push.fog_color = state.fog_color[0] | state.fog_color[1] << 8 | state.fog_color[2] << 16;
     push.face = state.prog0_face;
+    if (scope_pipeline == kOutlineCompositeScope) {
+        // outline_composite.frag: the copies' colour, their shift on the texture and the box its layers sample.
+        const LogicalRect &box = state.outline_box;
+        push.fog_color = state.outline_colour[0] | state.outline_colour[1] << 8 | state.outline_colour[2] << 16 |
+                         static_cast<uint32_t>(state.outline_colour[3]) << 24;
+        push.face = std::bit_cast<uint32_t>(state.outline_offset * push.uv_xform[0]);
+        push.palette_index = std::bit_cast<uint32_t>(state.outline_offset * push.uv_xform[1]);
+        push.mesh_index = PackUnorm2x16(box.x * push.uv_xform[0] + push.uv_xform[2], box.y * push.uv_xform[1] + push.uv_xform[3]);
+        push.prog0_index = PackUnorm2x16((box.x + box.w) * push.uv_xform[0] + push.uv_xform[2],
+                                         (box.y + box.h) * push.uv_xform[1] + push.uv_xform[3]);
+    }
     if (const PlaneDraw *plane = tls.plane_draw) {
         // depth_planes.frag reads the colour table and its row where a 2D draw has no palette or mesh record.
         push.palette_slot = plane->table_slot;
@@ -3221,6 +3247,8 @@ bool BlitTexture(TextureHandle src, Rect src_rect, TextureHandle dst, Rect dst_r
 }
 
 bool DepthPlanesAvailable() { return g.depth_planes_pipeline != VK_NULL_HANDLE; }
+
+bool OutlineCompositeAvailable() { return g.outline_composite_pipeline != VK_NULL_HANDLE; }
 
 bool CanCopyMainDepth(TextureHandle target) {
     if (!g.depth_blit || target == kMainTarget || target == kPreviousFrame) {

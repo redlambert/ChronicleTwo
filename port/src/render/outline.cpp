@@ -289,6 +289,57 @@ bool OutlineEdgeDepthTest() {
 }
 
 /**
+ * Reports whether an outline's copies and body go out as one composite draw where the renderer offers it.
+ */
+bool OutlineOnePass() {
+    static const bool enabled = [] {
+        const char *setting = std::getenv("DC2_OUTLINE_ONE_PASS");
+        return setting == nullptr || std::string_view(setting) != "0";
+    }();
+    return enabled && gfx::OutlineCompositeAvailable();
+}
+
+/**
+ * Draws the four offset copies and the body as one composite: the same layers in the same order, but the target
+ * is read and written once. The quad reaches past the box by the offset, where the copies reach.
+ */
+void DrawOnePass(const OutlineBox &box, const mgPortExtent &display, int edge_offset, const uint8_t (&edge_colour)[4],
+                 const uint8_t (&body_colour)[4], float depth, const gfx::TextureBinding &binding, const gfx::DrawState &body_state) {
+    const float offset = static_cast<float>(edge_offset) / kUnitsPerPixel;
+    const float left = static_cast<float>(box.left) / kUnitsPerPixel;
+    const float top = static_cast<float>(box.top) / kUnitsPerPixel;
+    const float right = static_cast<float>(box.right) / kUnitsPerPixel;
+    const float bottom = static_cast<float>(box.bottom) / kUnitsPerPixel;
+
+    gfx::DrawState state = body_state;
+    state.outline_composite = true;
+    std::memcpy(state.outline_colour, edge_colour, sizeof edge_colour);
+    state.outline_offset = offset;
+    state.outline_box = {.x = left, .y = top, .w = right - left, .h = bottom - top};
+
+    const auto corner = [&](float x, float y) {
+        gfx::Vertex2D vertex{};
+        vertex.x = x;
+        vertex.y = y;
+        vertex.z = depth;
+        vertex.u = x;
+        vertex.v = y;
+        std::memcpy(vertex.color, body_colour, sizeof body_colour);
+        return vertex;
+    };
+
+    const gfx::Vertex2D quad[4] = {corner(left - offset, top - offset), corner(right + offset, top - offset),
+                                   corner(right + offset, bottom + offset), corner(left - offset, bottom + offset)};
+    // Display frames sample the whole display extent, as the body's and the copies' own presentations do.
+    const gfx::Vertex2D display_quad[4] = {corner(display.left, display.top), corner(display.right, display.top),
+                                           corner(display.right, display.bottom), corner(display.left, display.bottom)};
+    gfx::DrawState presentation_state = state;
+    presentation_state.outline_box = {.x = display.left, .y = display.top, .w = display.right - display.left, .h = display.bottom - display.top};
+    const gfx::Presentation2D presentation{.vertices = display_quad, .state = presentation_state, .bounded_region = true};
+    mgPortDraw2D(gfx::Primitive::Quads, quad, binding, state, &presentation);
+}
+
+/**
  * Preserves the full-area body's destination alpha before its RGB coverage is bounded.
  */
 void DrawPresentationAlphaReset(const mgPortExtent &extent, const gfx::DrawState &body_state) {
@@ -473,6 +524,9 @@ int COutLineDraw::Draw(float scale, float alpha) {
                                        (!body_state.alpha_test || body_state.alpha_func == gfx::AlphaFunc::Always ||
                                         (body_state.alpha_func == gfx::AlphaFunc::GEqual && body_state.alpha_ref == 0));
 
+    const uint8_t body_colour[4] = {128, 128, 128, static_cast<uint8_t>(static_cast<int>(128.0f * alpha))};
+    bool          drawn = false;
+
     if (hide_edge == 0 && !(alpha < 1.0f) && edge_offset > 0 && !(opacity < 0.1f)) {
         const uint8_t edge_colour[4] = {static_cast<uint8_t>(static_cast<int>(color[0])),
                                         static_cast<uint8_t>(static_cast<int>(color[1])),
@@ -485,10 +539,20 @@ int COutLineDraw::Draw(float scale, float alpha) {
         mgPortApplyDrawEnv(edge_state, edge_env);
         const bool defer_alpha = body_overwrites_alpha && edge_state == body_state;
 
+        // One draw for the copies and the body when their states match. The composite leaves out the optional edge
+        // depth test below, so the copies test depth as retail's do.
+        if (OutlineOnePass() && !depth_write && edge_state == body_state) {
+            if (body_overwrites_alpha && gfx::Recording()) {
+                DrawPresentationAlphaReset(display, body_state);
+            }
+            DrawOnePass(box, display, edge_offset, edge_colour, body_colour, mgPortDepth(static_cast<uint32_t>(depth)), binding, body_state);
+            drawn = true;
+        }
+
         // The body covers these copies wherever it has depth, so testing them behind its farthest point rejects its
         // interior before shading. The object drew into the scene's depth buffer, which the image shares.
         float edge_depth = 0.0f;
-        if (OutlineEdgeDepthTest() && previous == gfx::kMainTarget) {
+        if (!drawn && OutlineEdgeDepthTest() && previous == gfx::kMainTarget) {
             float eye_to_clip[16];
             mgPortEyeToClip(mgPortCurrentProjection(), mgPortCurrentTarget(), eye_to_clip);
             const float distance = eye_to_clip[11] * draw_box.max[3] + eye_to_clip[15] > 0.0f ? draw_box.max[3] : -draw_box.max[3];
@@ -499,17 +563,20 @@ int COutLineDraw::Draw(float scale, float alpha) {
             }
         }
 
-        DrawCopy(box, display, edge_offset, 0, edge_colour, edge_depth, binding, edge_state, defer_alpha);
-        DrawCopy(box, display, -edge_offset, 0, edge_colour, edge_depth, binding, edge_state, defer_alpha);
-        DrawCopy(box, display, 0, edge_offset, edge_colour, edge_depth, binding, edge_state, defer_alpha);
-        DrawCopy(box, display, 0, -edge_offset, edge_colour, edge_depth, binding, edge_state, defer_alpha);
+        if (!drawn) {
+            DrawCopy(box, display, edge_offset, 0, edge_colour, edge_depth, binding, edge_state, defer_alpha);
+            DrawCopy(box, display, -edge_offset, 0, edge_colour, edge_depth, binding, edge_state, defer_alpha);
+            DrawCopy(box, display, 0, edge_offset, edge_colour, edge_depth, binding, edge_state, defer_alpha);
+            DrawCopy(box, display, 0, -edge_offset, edge_colour, edge_depth, binding, edge_state, defer_alpha);
+        }
     }
 
-    if (body_overwrites_alpha && gfx::Recording()) {
-        DrawPresentationAlphaReset(display, body_state);
+    if (!drawn) {
+        if (body_overwrites_alpha && gfx::Recording()) {
+            DrawPresentationAlphaReset(display, body_state);
+        }
+        DrawCopy(box, display, 0, 0, body_colour, mgPortDepth(static_cast<uint32_t>(depth)), binding, body_state);
     }
-    const uint8_t body_colour[4] = {128, 128, 128, static_cast<uint8_t>(static_cast<int>(128.0f * alpha))};
-    DrawCopy(box, display, 0, 0, body_colour, mgPortDepth(static_cast<uint32_t>(depth)), binding, body_state);
     gfx::EndPresentationRegion(body_overwrites_alpha);
 
     // The composite's packets are the last writes to these registers.

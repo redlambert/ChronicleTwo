@@ -631,6 +631,16 @@ struct DrawState {
     bool screen_space = false;
     // Prog0Face bits of a prog0 mesh draw, passed to Vu_prog0 in push constants.
     uint32_t prog0_face = 0;
+    // A one-pass outline composite (OutlineCompositeAvailable): a source-over 2D quad of an outline image that
+    // also draws that image's four offset copies, at +x, -x, +y and -y, under the body, in that order.
+    bool outline_composite = false;
+    // The copies' GS vertex colour.
+    uint8_t outline_colour[4] = {0, 0, 0, 0};
+    // How far each copy is shifted, in the texture's logical texels.
+    float outline_offset = 0.0f;
+    // The texels the body and its copies draw from, in the texture's logical texels; a layer covers only the pixels
+    // whose sample lands inside it.
+    LogicalRect outline_box = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // ---- Drawing ---------------------------------------------------------------------------------
@@ -834,6 +844,12 @@ struct DepthPlanes2D {
  * their own planes drawn unchanged while it is off test this first.
  */
 bool DepthPlanesAvailable();
+
+/**
+ * Whether DrawState::outline_composite draws are honoured on this renderer: the bindless texture path and the
+ * device's dual-source blending. Callers draw their outline copies one by one when it is off.
+ */
+bool OutlineCompositeAvailable();
 
 /**
  * Accumulates up to eight depth planes of one quad over a black destination.
