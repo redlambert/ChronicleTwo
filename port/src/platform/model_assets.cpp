@@ -752,15 +752,22 @@ std::shared_ptr<Document> ReadBytes(std::span<const std::byte> bytes, const Json
  */
 std::shared_ptr<Document> Read(const std::filesystem::path &relative, bool allow_standard = false) {
     CT_PROFILE_ZONE("Read model document");
-    std::string error = "native glTF asset missing: " + relative.generic_string();
-    for (const auto &path : datapacks::Candidates(relative)) {
+    // Laps for the trace: an item pickup's already-read model still spent 8 to 10 ms here.
+    frame_trace::Laps laps("model read", 5.0);
+    std::string       error = "native glTF asset missing: " + relative.generic_string();
+    const auto        paths = datapacks::Candidates(relative);
+    laps.Mark("candidates");
+    for (const auto &path : paths) {
         if (!vfs::Size(path)) {
+            laps.Mark("size");
             continue;
         }
+        laps.Mark("size");
         try {
             std::string sidecar_error;
             std::string sidecar_identity;
             auto        game = ParseGameplay(relative, sidecar_error, sidecar_identity);
+            laps.Mark("gameplay");
             const bool  standard_only = !game;
             if (!game) {
                 auto sidecar = relative;
@@ -777,9 +784,11 @@ std::shared_ptr<Document> Read(const std::filesystem::path &relative, bool allow
             }
             const auto stamp = path.Display() + '|' + vfs::Stamp(path);
             const auto key = stamp + '|' + (standard_only ? std::string("standard") : sidecar_identity);
+            laps.Mark("stamp");
             {
                 std::lock_guard lock(documents_mutex);
                 if (const auto found = documents.find(key); found != documents.end()) {
+                    laps.Mark("cached");
                     return found->second;
                 }
             }
@@ -787,9 +796,11 @@ std::shared_ptr<Document> Read(const std::filesystem::path &relative, bool allow
             if (!datapacks::ReadFileBytes(path, data)) {
                 throw std::runtime_error("cannot read native glTF asset: " + relative.generic_string());
             }
+            laps.Mark("file");
             datapacks::Trace("model.gltf_reads");
             datapacks::Trace("model.gltf_bytes", data.size());
             auto document = ReadBytes(std::as_bytes(std::span(data)), *game, relative, datapacks::IsReplacement(path));
+            laps.Mark("parse");
             document->standard_only = standard_only;
             if (document->overlaid) {
                 document->source = stamp;
@@ -1938,23 +1949,140 @@ void Skin(Document &document, const fastgltf::Node &node, const Json &detail, mg
 /**
  * Constructs a native key channel from decoded auxiliary values.
  */
-Mot_List *Channel(const Json &channel, mgCMemory &memory) {
-    auto *list = Allocate<Mot_List>(memory);
-    native_channels.erase(list);
-    list->frame = ModelInteger<decltype(list->frame)>(channel.at("frame"));
-    list->target = ModelInteger<decltype(list->target)>(channel.at("target"));
-    list->type = ModelInteger<decltype(list->type)>(channel.at("type"));
-    if (channel.at("keys").size() > std::numeric_limits<u32>::max()) {
+/**
+ * One gameplay JSON motion channel with its keys already decoded.
+ */
+struct DecodedChannel {
+    decltype(Mot_List::frame)         frame{};    /**< Native frame the channel drives. */
+    decltype(Mot_List::target)        target{};   /**< Channel target. */
+    decltype(Mot_List::type)          type{};     /**< Key type. */
+    std::vector<u32>                  key_frames; /**< Key frames in game frames. */
+    std::vector<std::array<float, 4>> values;     /**< Key values. */
+};
+
+/**
+ * Decoded channels of one gameplay JSON, by the address of each channel's JSON.
+ */
+struct DecodedChannels {
+    std::weak_ptr<const Json>                                                root;     /**< The gameplay JSON, to notice it was freed. */
+    std::unordered_map<const Json *, std::shared_ptr<const DecodedChannel>> channels; /**< Decoded channels. */
+};
+
+/**
+ * Key times of one glTF's animation inputs, by input accessor.
+ */
+struct DecodedKeyTimes {
+    std::weak_ptr<const fastgltf::Asset>                                      asset; /**< The glTF, to notice it was freed. */
+    std::unordered_map<std::size_t, std::shared_ptr<const std::vector<float>>> times; /**< Key times in game frames. */
+};
+
+// Every character swap rebuilds all of a character's motions, and walking the JSON keys and the glTF key times
+// again was most of the swap's MOTION time (about 40 ms). Both are decoded once per document here.
+std::mutex                                                 motion_decode_mutex;
+std::unordered_map<const Json *, DecodedChannels>          decoded_channels;
+std::unordered_map<const fastgltf::Asset *, DecodedKeyTimes> decoded_key_times;
+
+/**
+ * Decodes one gameplay JSON motion channel, or gives back the copy decoded earlier from the same JSON.
+ */
+std::shared_ptr<const DecodedChannel> DecodeChannel(const Json &channel, const std::shared_ptr<Json> &root) {
+    const auto key_count = channel.at("keys").size();
+    std::unique_lock lock(motion_decode_mutex, std::defer_lock);
+    DecodedChannels *table = nullptr;
+    if (root) {
+        lock.lock();
+        auto &entry = decoded_channels[root.get()];
+        if (entry.root.lock() != root) {
+            entry.root = root;
+            entry.channels.clear();
+        }
+        table = &entry;
+        if (const auto found = table->channels.find(&channel); found != table->channels.end()) {
+            // Cheap checks that the address still names the same channel.
+            const auto &cached = *found->second;
+            if (cached.key_frames.size() == key_count && cached.type == ModelInteger<decltype(Mot_List::type)>(channel.at("type")) && cached.frame == ModelInteger<decltype(Mot_List::frame)>(channel.at("frame"))) {
+                return found->second;
+            }
+        }
+        lock.unlock();
+    }
+    if (key_count > std::numeric_limits<u32>::max()) {
         throw std::runtime_error("native motion key count exceeds its field");
     }
-    list->key_count = static_cast<u32>(channel.at("keys").size());
+    auto decoded = std::make_shared<DecodedChannel>();
+    decoded->frame = ModelInteger<decltype(Mot_List::frame)>(channel.at("frame"));
+    decoded->target = ModelInteger<decltype(Mot_List::target)>(channel.at("target"));
+    decoded->type = ModelInteger<decltype(Mot_List::type)>(channel.at("type"));
+    decoded->key_frames.resize(key_count);
+    decoded->values.resize(key_count);
+    const auto &keys = channel.at("keys");
+    for (std::size_t key = 0; key < key_count; ++key) {
+        const auto &value = keys.at(key);
+        decoded->key_frames[key] = ModelInteger<u32>(value.at("frame"));
+        const auto &components = value.at("value");
+        for (int component = 0; component < 4; ++component) {
+            decoded->values[key][component] = components.at(component);
+        }
+    }
+    if (table) {
+        lock.lock();
+        auto &entry = decoded_channels[root.get()];
+        if (entry.root.lock() == root) {
+            entry.channels.insert_or_assign(&channel, decoded);
+        }
+    }
+    return decoded;
+}
+
+/**
+ * Reads an animation input's key times in game frames, checking them, or gives back the copy read earlier.
+ */
+std::shared_ptr<const std::vector<float>> DecodeKeyTimes(const std::shared_ptr<Document> &document, std::size_t accessor_index) {
+    {
+        const std::scoped_lock lock(motion_decode_mutex);
+        auto                  &entry = decoded_key_times[document->storage.get()];
+        if (entry.asset.lock() != document->storage) {
+            entry.asset = document->storage;
+            entry.times.clear();
+        }
+        if (const auto found = entry.times.find(accessor_index); found != entry.times.end()) {
+            return found->second;
+        }
+    }
+    const auto &input = document->asset.accessors.at(accessor_index);
+    auto        times = std::make_shared<std::vector<float>>();
+    times->reserve(input.count);
+    for (std::size_t key = 0; key < input.count; ++key) {
+        const float time = fastgltf::getAccessorElement<float>(document->asset, input, key) * 30.0f;
+        if (!std::isfinite(time) || time < 0 || time > 4294967040.0f || (!times->empty() && time <= times->back())) {
+            throw std::runtime_error("invalid glTF animation timeline");
+        }
+        times->push_back(time);
+    }
+    const std::scoped_lock lock(motion_decode_mutex);
+    auto                  &entry = decoded_key_times[document->storage.get()];
+    if (entry.asset.lock() == document->storage) {
+        entry.times.insert_or_assign(accessor_index, times);
+    }
+    return times;
+}
+
+Mot_List *Channel(const Json &channel, mgCMemory &memory, const std::shared_ptr<Json> &root = nullptr) {
+    const auto decoded = DecodeChannel(channel, root);
+    auto      *list = Allocate<Mot_List>(memory);
+    native_channels.erase(list);
+    list->frame = decoded->frame;
+    list->target = decoded->target;
+    list->type = decoded->type;
+    list->key_count = static_cast<u32>(decoded->key_frames.size());
     list->values = Allocate<sceVu0FVECTOR>(memory, list->key_count);
     list->key_frames = Allocate<u32>(memory, list->key_count);
+    if (list->key_count) {
+        std::memcpy(list->key_frames, decoded->key_frames.data(), list->key_count * sizeof(u32));
+    }
     for (u32 key = 0; key < list->key_count; ++key) {
-        const auto &value = channel.at("keys").at(key);
-        list->key_frames[key] = ModelInteger<u32>(value.at("frame"));
         for (int component = 0; component < 4; ++component) {
-            list->values[key][component] = value.at("value").at(component);
+            list->values[key][component] = decoded->values[key][component];
         }
     }
     return list;
@@ -2755,7 +2883,7 @@ Mot_List *BuildChannels(const std::shared_ptr<Document> &document, std::optional
                 continue;
             }
         }
-        *tail = Channel(channel, memory);
+        *tail = Channel(channel, memory, document->custom);
         tail = &(*tail)->next;
     }
     if (animation_index) {
@@ -2806,13 +2934,7 @@ Mot_List *BuildChannels(const std::shared_ptr<Document> &document, std::optional
             list->key_count = static_cast<u32>(input.count);
             list->values = nullptr;
             list->key_frames = nullptr;
-            for (std::size_t key = 0; key < input.count; ++key) {
-                const float time = fastgltf::getAccessorElement<float>(document->asset, input, key) * 30.0f;
-                if (!std::isfinite(time) || time < 0 || time > 4294967040.0f || (!retained.times.empty() && time <= retained.times.back())) {
-                    throw std::runtime_error("invalid glTF animation timeline");
-                }
-                retained.times.push_back(time);
-            }
+            retained.times = *DecodeKeyTimes(document, sampler.inputAccessor);
             native_channels.insert_or_assign(list, std::move(retained));
             *tail = list;
             tail = &list->next;

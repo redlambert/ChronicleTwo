@@ -21,6 +21,8 @@ constexpr std::string_view kMenuTextures = "textures/menu/1";
 // The documents the trace named, by the start of their file names (the rest is a content hash).
 constexpr std::array<std::string_view, 5> kDocuments = {"frametex-", "allitem-", "edmenu-", "item.json", "img-"};
 constexpr std::string_view                kMenuCharacter = "menu/chara4/c01b_menu.gltf";
+// The sparkle model every dungeon item pickup and monster drop loads (40 to 60 ms on the game thread each time).
+constexpr std::string_view kPickupEffect = "effect/itemget.gltf";
 
 std::atomic<bool> running{false};
 std::jthread      worker;
@@ -77,6 +79,7 @@ void Start() {
                     datapacks::PrefetchEntries(pointers);
                 }
                 model_assets::Warm(std::filesystem::path(kMenuCharacter));
+                model_assets::Warm(std::filesystem::path(kPickupEffect));
             } catch (...) {
                 // Not ready ahead; the menu reads them when it opens, as before.
             }
@@ -87,7 +90,7 @@ void Start() {
         CT_LOG_WARN(Main, "menu prefetch: no worker thread ({}); the menu loads as before", error.what());
         return;
     }
-    CT_LOG_INFO(Main, "menu prefetch: reading {} menu texture documents and the menu character ahead", documents);
+    CT_LOG_INFO(Main, "menu prefetch: reading {} menu texture documents, the menu character and the pickup sparkle ahead", documents);
 }
 
 } // namespace menu_prefetch

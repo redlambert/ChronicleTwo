@@ -60,7 +60,7 @@ void Note(std::string_view text);
 void LongFrame(std::string_view area, double frame_ms, std::string_view game_zones, std::string_view other_zones);
 
 // A slow single operation, with what it worked on. kind: T texture document, M model build, A archive read,
-// F game file load, V villager step, U town update part, X other.
+// F game file load, V villager step, U town update part, S one script run (module name), X other.
 void Slow(char kind, std::string_view what, double ms);
 
 // Times a scope and writes a Slow line when it runs at least min_ms. Cheap when the trace is off.

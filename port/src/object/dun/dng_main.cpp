@@ -41,7 +41,9 @@
 #include "gamepad.hpp"
 #include "helpmes.hpp"
 #include "log/game_output.hpp"
+#include "luau_runtime.hpp"
 #include "mainloop.hpp"
+#include "platform/menu_prefetch.hpp"
 #include "maintex.hpp"
 #include "map.hpp"
 #include "mapload.hpp"
@@ -383,6 +385,14 @@ static inline unsigned int DngAlign16Size(unsigned int size) {
 
     return size >> 4;
 }
+
+namespace {
+
+// Game frames into a floor before the menu prefetch starts, or -1 once it has.
+constexpr int kDungeonPrefetchDelay = 60;
+int           dungeon_prefetch_frames = -1;
+
+} // namespace
 
 void InitDungeonMain(INIT_LOOP_ARG arg) {
     SetCurrentDir(nullptr);
@@ -827,6 +837,16 @@ void InitDungeonMain(INIT_LOOP_ARG arg) {
 
     EventScriptSetup(script);
     BattleAreaScene->SetStatusBarNow(1);
+
+    // Effect and action scripts compiled on first use cost 9 to 41 ms in the middle of a fight or a swap (the trace's
+    // "Load script file"); compiling them here, behind the loading screen, moves that cost out of play. Each prefix
+    // is done once per session, so only the first floor pays.
+    luau_runtime::Preload("dungeon/eff_script/");
+    luau_runtime::Preload("dungeon/articles/");
+    luau_runtime::Preload("dungeon/act_script/");
+    luau_runtime::Preload("mainchr/");
+    dungeon_prefetch_frames = 0;
+
     NowLoadingBarSteEnd();
     DeleteNowLoading();
 }
@@ -981,6 +1001,16 @@ void FinishDungeonMain() {
 int LoopDungeonMain() {
     int key{};
     int mode = {};
+
+    // About two seconds into a floor, the menu's heavy textures and the item pickup model are read ahead on a
+    // worker, as town does; opening the menu in a dungeon spent 500 ms on them.
+    if (dungeon_prefetch_frames >= 0) {
+        ++dungeon_prefetch_frames;
+        if (dungeon_prefetch_frames >= kDungeonPrefetchDelay) {
+            dungeon_prefetch_frames = -1;
+            menu_prefetch::Start();
+        }
+    }
 
     auto *main_map_slot = DngMainScene->GetSceneMap(DngMainScene->active_map);
     dc2::dungeon::SetMainMap(main_map_slot != nullptr ? main_map_slot->GetMapView() : dc2::scene::MapView{});
@@ -1653,13 +1683,17 @@ void DngMainDraw() {
             show = false;
         }
 
-        if (show && debag_param && !(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
-            tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
-            LockOnModel.Draw();
-        }
+        {
+            CT_PROFILE_ZONE("HUD lock-on and monster name");
 
-        if (show && debag_param && !(BattleAreaScene->pause_flag & (DNG_PAUSE_MONSTER_NAMES | DNG_PAUSE_MONSTER_DRAW)) && !config->monster_name) {
-            LockOnModel.DrawMess(0x58);
+            if (show && debag_param && !(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
+                tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
+                LockOnModel.Draw();
+            }
+
+            if (show && debag_param && !(BattleAreaScene->pause_flag & (DNG_PAUSE_MONSTER_NAMES | DNG_PAUSE_MONSTER_DRAW)) && !config->monster_name) {
+                LockOnModel.DrawMess(0x58);
+            }
         }
 
         tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
@@ -1669,9 +1703,13 @@ void DngMainDraw() {
             DngMainScene->DrawExclamationMark(RedMarkModel->frame);
 
             if (!(BattleAreaScene->pause_flag & DNG_PAUSE_MONSTER_DRAW)) {
-                ActiveMonster->DrawLifeGage(config->anger_counter, config->enemy_hp);
+                {
+                    CT_PROFILE_ZONE("HUD monster life gauges");
+                    ActiveMonster->DrawLifeGage(config->anger_counter, config->enemy_hp);
+                }
 
                 if (!config->damage_off) {
+                    CT_PROFILE_ZONE("HUD damage numbers");
                     DamageScore.Draw();
                     DamageScore2.Draw(DngMainScene);
 
@@ -1681,10 +1719,14 @@ void DngMainDraw() {
                 }
             }
 
-            LevelupInfo.Draw();
+            {
+                CT_PROFILE_ZONE("HUD level up");
+                LevelupInfo.Draw();
+            }
         }
 
         if (!NowTakePhoto()) {
+            CT_PROFILE_ZONE("HUD status board");
             DrawStatusBord();
         }
 
@@ -1713,6 +1755,7 @@ void DngMainDraw() {
                     AutoMapGen.mini_map.large = 1;
                 }
 
+                CT_PROFILE_ZONE("HUD minimap");
                 AutoMapGen.mini_map.Draw(pos);
                 tex_man->ReloadTexture(0x48, (sceVif1Packet *) nullptr);
                 AutoMapGen.mini_map.DrawSymbolOpen();
@@ -1739,15 +1782,19 @@ void DngMainDraw() {
         tex_man->ReloadTexture(0x58, (sceVif1Packet *) nullptr);
 
         if (show && debag_param) {
+            CT_PROFILE_ZONE("HUD message tasks");
             MsgTaskMan.Step();
             MsgTaskMan.Draw();
         }
 
-        EventMess->Step();
-        EventMess->DrawMesWin();
-        GetSystemMessage()->Step();
-        GetSystemMessage()->DrawMesWin();
-        EventTimeDraw();
+        {
+            CT_PROFILE_ZONE("HUD message windows");
+            EventMess->Step();
+            EventMess->DrawMesWin();
+            GetSystemMessage()->Step();
+            GetSystemMessage()->DrawMesWin();
+            EventTimeDraw();
+        }
 
         if (show && debag_param) {
             StartupEpisodeTitle.Step();

@@ -39,6 +39,7 @@
 #include <utility>
 #include <vector>
 
+#include "diag/frame_trace.hpp"
 #include "diag/recorder.hpp"
 #include "log/game_output.hpp"
 #include "log/log.hpp"
@@ -1134,6 +1135,9 @@ void LogScriptPackTotals() {
                 script_pack.loaded, script_pack.read_ms, script_pack.missing, script_pack.fallbacks);
 }
 
+// Set while Preload fills the module cache, so it does not write a log line for every module.
+bool preloading = false;
+
 /**
  *
  * Pushes a module's compiled chunk onto lua, reusing the cached function when the file already compiled.
@@ -1161,10 +1165,12 @@ bool PushModuleFunction(lua_State *lua, const std::filesystem::path &file, std::
             }
 #endif
             ++script_pack.loaded;
-            CT_LOG_INFO(Script, "luau: loaded packed {}", PathsDisplay(file));
-            dc2::diag::Notef("script", "loaded {} from pack in {:.0f} ms", PathsDisplay(file),
-                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load_start).count());
-            LogScriptPackTotals();
+            if (!preloading) {
+                CT_LOG_INFO(Script, "luau: loaded packed {}", PathsDisplay(file));
+                dc2::diag::Notef("script", "loaded {} from pack in {:.0f} ms", PathsDisplay(file),
+                                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load_start).count());
+                LogScriptPackTotals();
+            }
             lua_getref(lua, module_cache_ref);
             lua_pushvalue(lua, -2);
             lua_setfield(lua, -2, key.c_str());
@@ -1559,6 +1565,9 @@ bool PushProgram(lua_State *lua, const Instance &instance, int no) {
 void Step(CRunScript *script, Instance &instance, lua_State *co, int nargs) {
     const CurrentGuard guard(script);
     remaining = budget;
+    // A copy of the module name, since the instance can be released while it runs. Only made while the trace is on.
+    const std::string            trace_label = frame_trace::Enabled() ? instance.module : std::string();
+    const frame_trace::SlowScope slow('S', trace_label, 1.5);
     const int status = lua_resume(co, nullptr, nargs);
     if (!dc2::script::ExecutionValid(script)) {
         instance.broken = true;
@@ -1880,6 +1889,41 @@ std::optional<std::vector<EventArgAction>> ReadEventArgData(std::string_view mod
         CT_LOG_ERROR(Script, "luau: {}: malformed argument data, expected {{command, args}} entries of typed values", ScriptLabel(module));
     }
     return actions;
+}
+
+int Preload(std::string_view prefix) {
+    static std::unordered_set<std::string> done;
+    if (!done.insert(std::string(prefix)).second) {
+        return 0;
+    }
+    if (EnsureState() == nullptr) {
+        return 0;
+    }
+    EnsureIndex();
+
+    std::vector<std::pair<std::string, std::filesystem::path>> wanted;
+    for (const auto &[module, file] : modules) {
+        if (module.starts_with(prefix)) {
+            wanted.emplace_back(module, file);
+        }
+    }
+    std::sort(wanted.begin(), wanted.end());
+
+    const auto start = std::chrono::steady_clock::now();
+    int        loaded = 0;
+    preloading = true;
+    for (const auto &[module, file] : wanted) {
+        const int top = lua_gettop(state);
+        if (PushModuleFunction(state, file, ScriptLabel(module))) {
+            ++loaded;
+        }
+        lua_settop(state, top);
+    }
+    preloading = false;
+
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CT_LOG_INFO(Script, "luau: preloaded {} of {} modules under {} in {:.0f} ms", loaded, wanted.size(), prefix, ms);
+    return loaded;
 }
 
 void Load(CRunScript *script, std::string_view module) {

@@ -93,6 +93,8 @@ std::size_t decode_cache_bytes = 0;
 std::mutex memo_mutex;
 /** Candidates results per relative path for the current pack configuration. */
 std::unordered_map<std::string, std::vector<vfs::Ref>> candidates_memo;
+/** GameplayCandidates results per relative path for the current pack configuration. */
+std::unordered_map<std::string, std::vector<vfs::Ref>> gameplay_candidates_memo;
 /** Host file stamps per display name while a StampScope is alive. */
 std::unordered_map<std::string, std::string> stamp_memo;
 /** Number of live StampScope objects. */
@@ -134,6 +136,7 @@ void ClearDecodeCache() {
 void ClearMemos() {
     const std::scoped_lock lock(memo_mutex);
     candidates_memo.clear();
+    gameplay_candidates_memo.clear();
     stamp_memo.clear();
 }
 
@@ -567,6 +570,14 @@ std::vector<vfs::Ref> GameplayCandidates(const std::filesystem::path &relative) 
     if (!name) {
         return {};
     }
+    // Every model read looks these up again (ParseGameplay builds its cache key from them), once per pack.
+    {
+        const std::scoped_lock lock(memo_mutex);
+        if (const auto found = gameplay_candidates_memo.find(*name); found != gameplay_candidates_memo.end()) {
+            Trace("gameplay candidates memo hits");
+            return found->second;
+        }
+    }
     const std::string     logical = name->starts_with("gameplay/") ? name->substr(9) : *name;
     const std::string     physical = "gameplay/" + logical;
     std::vector<vfs::Ref> candidates;
@@ -581,6 +592,8 @@ std::vector<vfs::Ref> GameplayCandidates(const std::filesystem::path &relative) 
         append(pack.mount);
     }
     append(base);
+    const std::scoped_lock lock(memo_mutex);
+    gameplay_candidates_memo.insert_or_assign(*name, candidates);
     return candidates;
 }
 

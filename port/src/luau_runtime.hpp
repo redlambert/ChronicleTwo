@@ -72,6 +72,14 @@ void Load(CRunScript *script, std::string_view module);
 
 /**
  *
+ * Compiles every module whose path starts with the prefix into the module cache, so their first use later costs
+ * nothing. Each prefix is done once per session. Gives back how many modules it compiled.
+ *
+ */
+int Preload(std::string_view prefix);
+
+/**
+ *
  * Reports whether Luau runs this script instance.
  *
  */
