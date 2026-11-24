@@ -1646,6 +1646,170 @@ void Mesh(Document &document, const fastgltf::Node &node, const Json &detail, mg
     }
 }
 
+/**
+ * Converts a mesh's geometry exactly as Mesh does, into a MeshImage only: no arena, materials or textures, so a worker
+ * can do it before the game thread builds the model, which then copies the image (Instantiate's cached path). The
+ * frame trace showed building a villager's or a large map piece's mesh taking 15 to 21 ms of one game frame. Meshes
+ * with morph targets are left for the game thread. Returns false when it left the mesh alone.
+ */
+bool BuildMeshImage(const Document &document, const fastgltf::Node &node, const Json &detail, MeshImage &out) {
+    const auto &mesh = document.asset.meshes.at(*node.meshIndex);
+    if (!mesh.primitives.empty() && !mesh.primitives.front().targets.empty()) {
+        return false;
+    }
+    if (mesh.primitives.size() != detail.at("primitives").size()) {
+        return false;
+    }
+    const int counts[4] = {ModelInteger<int>(detail.at("vertex_count")), ModelInteger<int>(detail.at("normal_count")),
+                           ModelInteger<int>(detail.at("uv_count")), ModelInteger<int>(detail.at("colour_count"))};
+    for (int stream = 0; stream < 4; ++stream) {
+        if (counts[stream] < 0) {
+            return false;
+        }
+        out.counts[stream] = counts[stream];
+        out.streams[stream].assign(static_cast<std::size_t>(counts[stream]), std::array<float, 4>{});
+    }
+    // Native allocations are value-initialized, so zeroed vectors start out the same.
+    float (*streams[4])[4] = {};
+    for (int stream = 0; stream < 4; ++stream) {
+        streams[stream] = reinterpret_cast<float (*)[4]>(out.streams[stream].data());
+    }
+    if (detail.contains("streams")) {
+        for (int stream = 0; stream < 4; ++stream) {
+            const auto &values = detail.at("streams").at(kStreamValues[stream]);
+            if (values.size() > static_cast<std::size_t>(counts[stream])) {
+                throw std::runtime_error("preserved stream exceeds native allocation");
+            }
+            for (std::size_t index = 0; index < values.size(); ++index) {
+                for (int component = 0; component < 4; ++component) {
+                    streams[stream][index][component] = values.at(index).at(component);
+                }
+            }
+        }
+    }
+    const int material_num = ModelInteger<int>(detail.at("material_count"));
+    for (std::size_t index = 0; index < mesh.primitives.size(); ++index) {
+        const auto &primitive = mesh.primitives[index];
+        const auto &metadata = detail.at("primitives").at(index);
+        Stream<3>(document.asset, primitive, "POSITION", Mapping(metadata, "source_vertices"), streams[0], counts[0], 1);
+        Stream<3>(document.asset, primitive, "NORMAL", Mapping(metadata, "source_normals"), streams[1], counts[1], 0);
+        Stream<2>(document.asset, primitive, "TEXCOORD_0", Mapping(metadata, "source_uvs"), streams[2], counts[2], 0);
+        Stream<4>(document.asset, primitive, "COLOR_0", Mapping(metadata, "source_colours"), streams[3], counts[3], 0);
+        MeshImage::Face face;
+        face.type = ModelInteger<decltype(face.type)>(metadata.at("type"));
+        face.material = ModelInteger<decltype(face.material)>(metadata.at("material"));
+        if (face.material < 0 || face.material >= material_num) {
+            throw std::runtime_error("material index out of range");
+        }
+        const auto count = primitive.indicesAccessor ? document.asset.accessors.at(*primitive.indicesAccessor).count : Mapping(metadata, "source_vertices").size();
+        if (count > 32767) {
+            throw std::runtime_error("native face exceeds vertex limit");
+        }
+        face.vertex_num = static_cast<short>(count);
+        face.index_stride = static_cast<short>(IndexStride(face.type));
+        if (count * face.index_stride > 32767) {
+            throw std::runtime_error("native face exceeds index limit");
+        }
+        face.index_num = static_cast<short>(count * face.index_stride);
+        face.index.assign(static_cast<std::size_t>(face.index_num), 0);
+        for (std::size_t corner = 0; corner < count; ++corner) {
+            const auto source = primitive.indicesAccessor ? fastgltf::getAccessorElement<uint32_t>(document.asset, document.asset.accessors.at(*primitive.indicesAccessor), corner) : corner;
+            auto      *write = face.index.data() + corner * face.index_stride;
+            *write++ = ModelInteger<int>(Mapping(metadata, "source_vertices").at(source));
+            if (!(face.type & MG_FACE_NO_NORMAL)) {
+                *write++ = ModelInteger<int>(Mapping(metadata, "source_normals").at(source));
+            }
+            if (!(face.type & MG_FACE_NO_TEXTURE)) {
+                *write++ = ModelInteger<int>(Mapping(metadata, "source_uvs").at(source));
+            }
+            if (face.type & MG_FACE_COLOUR) {
+                *write++ = ModelInteger<int>(Mapping(metadata, "source_colours").at(source));
+            }
+        }
+        out.faces.push_back(std::move(face));
+    }
+    if (!document.overlaid && detail.contains("streams")) {
+        const auto &preserved = detail.at("streams");
+        for (int index = 0; index < counts[1]; ++index) {
+            for (int component = 0; component < 4; ++component) {
+                streams[1][index][component] = preserved.at("normals").at(index).at(component);
+            }
+        }
+        for (int index = 0; index < counts[3]; ++index) {
+            for (int component = 0; component < 4; ++component) {
+                streams[3][index][component] = preserved.at("colours").at(index).at(component);
+            }
+        }
+        for (int index = 0; index < counts[0]; ++index) {
+            streams[0][index][3] = preserved.at("positions").at(index).at(3);
+        }
+        for (int index = 0; index < counts[2]; ++index) {
+            for (int component = 2; component < 4; ++component) {
+                streams[2][index][component] = preserved.at("uvs").at(index).at(component);
+            }
+        }
+    }
+    if (!document.overlaid && detail.contains("stream_overrides")) {
+        for (int stream = 0; stream < 4; ++stream) {
+            for (const auto &change : detail.at("stream_overrides").value(kStreamValues[stream], Json::array())) {
+                const auto index = ModelInteger<int>(change.at(0));
+                const auto component = ModelInteger<int>(change.at(1));
+                if (index < 0 || index >= counts[stream] || component < 0 || component >= 4) {
+                    throw std::runtime_error("invalid native stream override");
+                }
+                streams[stream][index][component] = change.at(2).get<float>();
+            }
+        }
+    }
+    return true;
+}
+
+// Builds the mesh images of every model a document selects, for Warm. Returns how many it built.
+int WarmMeshImages(const std::shared_ptr<Document> &source) {
+    if (source->relative.empty() || source->standard_only || !source->custom) {
+        return 0;
+    }
+    std::vector<std::optional<std::size_t>> models;
+    if (source->custom->contains("models")) {
+        for (std::size_t index = 0; index < source->custom->at("models").size(); ++index) {
+            models.emplace_back(index);
+        }
+    } else {
+        models.emplace_back(std::nullopt);
+    }
+    int built = 0;
+    for (const auto &model : models) {
+        try {
+            const auto  selected = SelectModel(source, model);
+            const auto &frames = selected->metadata.at("frames");
+            for (std::size_t index = 0; index < frames.size(); ++index) {
+                const auto &node = ContentNode(*selected, index);
+                if (!node.meshIndex) {
+                    continue;
+                }
+                const auto identity = CachedMeshIdentity(*selected, node, ModelInteger<std::size_t>(frames.at(index).at("mdt")));
+                {
+                    std::lock_guard lock(mesh_images_mutex);
+                    if (mesh_images.contains(identity.get())) {
+                        continue;
+                    }
+                }
+                MeshImage image;
+                if (!BuildMeshImage(*selected, node, *identity, image)) {
+                    continue;
+                }
+                std::lock_guard lock(mesh_images_mutex);
+                // A game-thread build that finished first wins; both are the same conversion.
+                mesh_images.try_emplace(identity.get(), MeshImageEntry{.identity = identity, .image = std::make_shared<const MeshImage>(std::move(image))});
+                ++built;
+            }
+        } catch (...) {
+            // Left for the game thread, which builds and reports it as before.
+        }
+    }
+    return built;
+}
+
 void MeshMaterials(Document &document, const fastgltf::Mesh &mesh, const Json &detail, mgCVisualMDT &visual,
                    mgCMemory &memory, mgCTextureManager &textures) {
     visual.material_num = ModelInteger<int>(detail.at("material_count"));
@@ -3963,6 +4127,8 @@ bool Warm(const std::filesystem::path &gltf) {
             // Left for the game thread, which reports a bad image as before.
         }
     }
+    // And the geometry of its meshes, which the game thread then only copies.
+    WarmMeshImages(document);
     return true;
 }
 
