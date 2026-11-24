@@ -2,6 +2,8 @@
 #include "mw_runtime.h"
 
 #include <algorithm>
+#include <chrono>
+#include <deque>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <filesystem>
 #include <iterator>
 #include <map>
+#include <set>
 #include <optional>
 #include <span>
 #include <tuple>
@@ -743,17 +746,69 @@ dc2::text::Outline OutlineOf(Layer layer) {
     }
 }
 
+std::map<InkKey, Ink> ink_cache;
+std::size_t           ink_bytes_used = 0;
+
+// Every new character, size and outline was rendered and uploaded in the frame that first drew it, so a new
+// message spent 20 to 47 ms of one frame on its letters. The first time a size and outline is drawn, the rest of
+// the printable letters at that size are queued and made a little each frame instead.
+std::deque<InkKey>                              ink_warm_queue;
+std::set<std::tuple<int, int, Layer, int, int>> ink_warmed_styles;
+int                                             ink_warm_frame = -1;
+constexpr std::chrono::microseconds             kInkWarmBudget{1000};
+
+const Ink *MakeInk(const InkKey &key, int frame);
+
+/**
+ * Queues the printable letters at every pen shift for a size and outline drawn for the first time.
+ */
+void QueueInkWarm(const InkKey &key) {
+    const auto [ch, em_x, em_y, shift, layer, px_x, px_y] = key;
+    if (!ink_warmed_styles.emplace(em_x, em_y, layer, px_x, px_y).second) {
+        return;
+    }
+    for (char32_t letter = U'!'; letter <= U'~'; ++letter) {
+        for (int pen = 0; pen < kShiftSteps; ++pen) {
+            ink_warm_queue.push_back({letter, em_x, em_y, pen, layer, px_x, px_y});
+        }
+    }
+}
+
+/**
+ * Makes queued letters for up to the warm budget, once a frame.
+ */
+void StepInkWarm(int frame) {
+    if (ink_warm_frame == frame || ink_warm_queue.empty()) {
+        return;
+    }
+    ink_warm_frame = frame;
+    const auto deadline = std::chrono::steady_clock::now() + kInkWarmBudget;
+    while (!ink_warm_queue.empty() && std::chrono::steady_clock::now() < deadline) {
+        const InkKey next = ink_warm_queue.front();
+        ink_warm_queue.pop_front();
+        if (!ink_cache.contains(next)) {
+            MakeInk(next, frame);
+        }
+    }
+}
+
 // Glyph images are immutable, so a recorded frame never samples one that changed. Past the budget the
 // longest unused are destroyed; a frame's list keeps any it still draws alive until it is done with it.
 const Ink *GetInk(const InkKey &key) {
-    static std::map<InkKey, Ink> cache;
-    static std::size_t           bytes_used = 0;
-    constexpr std::size_t        budget = std::size_t{32} * 1024 * 1024;
-    const int                    frame = mgPortFrameCount();
-    if (const auto found = cache.find(key); found != cache.end()) {
+    const int frame = mgPortFrameCount();
+    StepInkWarm(frame);
+    if (const auto found = ink_cache.find(key); found != ink_cache.end()) {
         found->second.used = frame;
         return found->second.texture == gfx::kNullTexture ? nullptr : &found->second;
     }
+    QueueInkWarm(key);
+    return MakeInk(key, frame);
+}
+
+const Ink *MakeInk(const InkKey &key, int frame) {
+    auto                 &cache = ink_cache;
+    auto                 &bytes_used = ink_bytes_used;
+    constexpr std::size_t budget = std::size_t{32} * 1024 * 1024;
     const auto [ch, em_x, em_y, shift, layer, px_x, px_y] = key;
     Ink                        ink;
     std::vector<unsigned char> coverage;

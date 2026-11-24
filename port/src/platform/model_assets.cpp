@@ -236,12 +236,13 @@ std::unordered_map<const mgVertexWeight *, InverseBinds> inverse_binds;
  * An animation sampler retained alongside a native channel for exact glTF interpolation.
  */
 struct NativeChannel {
-    std::shared_ptr<Document>  document;                /**< Document retaining the channel's accessor buffers. */
-    fastgltf::AnimationSampler sampler;                 /**< Standard interpolation and input/output accessors. */
-    std::vector<float>         times;                   /**< Exact key times in game frames. */
-    std::size_t                morph_targets = 0;       /**< Number of scalar morph weights per key, or zero for TRS. */
-    bool                       helper_scale = false;    /**< Whether scale belongs to the rotation helper rather than the gameplay object. */
-    bool                       retail_rotation = false; /**< Whether generated base motion uses the game's rotation interpolation thresholds. */
+    std::shared_ptr<Document>                 document;                /**< Document retaining the channel's accessor buffers. */
+    fastgltf::AnimationSampler                sampler;                 /**< Standard interpolation and input/output accessors. */
+    std::span<const float>                    times;                   /**< Exact key times in game frames. */
+    std::shared_ptr<const std::vector<float>> times_owner;             /**< Shared storage of the key times. */
+    std::size_t                               morph_targets = 0;       /**< Number of scalar morph weights per key, or zero for TRS. */
+    bool                                      helper_scale = false;    /**< Whether scale belongs to the rotation helper rather than the gameplay object. */
+    bool                                      retail_rotation = false; /**< Whether generated base motion uses the game's rotation interpolation thresholds. */
 };
 
 /**
@@ -2916,7 +2917,7 @@ Mot_List *BuildChannels(const std::shared_ptr<Document> &document, std::optional
             const auto   &input = document->asset.accessors.at(sampler.inputAccessor);
             const auto   &output = document->asset.accessors.at(sampler.outputAccessor);
             const bool    cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
-            NativeChannel retained{.document = document, .sampler = sampler, .times = {}};
+            NativeChannel retained{.document = document, .sampler = sampler, .times = {}, .times_owner = nullptr};
             retained.helper_scale = channel.path == fastgltf::AnimationPath::Scale && document->rotation_nodes.contains(*channel.nodeIndex);
             retained.retail_rotation = !document->overlaid && document->asset.assetInfo && document->asset.assetInfo->generator == "Kazarov";
             if (channel.path == fastgltf::AnimationPath::Weights) {
@@ -2934,7 +2935,9 @@ Mot_List *BuildChannels(const std::shared_ptr<Document> &document, std::optional
             list->key_count = static_cast<u32>(input.count);
             list->values = nullptr;
             list->key_frames = nullptr;
-            retained.times = *DecodeKeyTimes(document, sampler.inputAccessor);
+            // Shared with every later build of the same animation instead of copied.
+            retained.times_owner = DecodeKeyTimes(document, sampler.inputAccessor);
+            retained.times = std::span<const float>(*retained.times_owner);
             native_channels.insert_or_assign(list, std::move(retained));
             *tail = list;
             tail = &list->next;

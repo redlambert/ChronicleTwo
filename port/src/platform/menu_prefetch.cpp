@@ -18,8 +18,20 @@ namespace menu_prefetch {
 namespace {
 
 constexpr std::string_view kMenuTextures = "textures/menu/1";
-// The documents the trace named, by the start of their file names (the rest is a content hash).
-constexpr std::array<std::string_view, 5> kDocuments = {"frametex-", "allitem-", "edmenu-", "item.json", "img-"};
+// The documents the trace named, by the start of their file names (the rest is a content hash). The page
+// backgrounds and the spectrumize and map pages cost 20 to 95 ms each when their page first opened.
+constexpr std::array<std::string_view, 10> kDocuments = {
+    "frametex-",
+    "allitem-",
+    "edmenu-",
+    "item.json",
+    "img-",
+    "chr_bg-",
+    "inv_bg-",
+    "op_bg-",
+    "spectre.json",
+    "dmap1-",
+};
 constexpr std::string_view                kMenuCharacter = "menu/chara4/c01b_menu.gltf";
 // The sparkle model every dungeon item pickup and monster drop loads (40 to 60 ms on the game thread each time).
 constexpr std::string_view kPickupEffect = "effect/itemget.gltf";
