@@ -1,3 +1,4 @@
+#include "diag/frame_trace.hpp"
 #ifdef __SWITCH__
 #include "platform/zip_archive.hpp"
 #else
@@ -121,6 +122,7 @@ public:
             return true;
         }
         CT_PROFILE_TEXT(entries_[index].name.data(), entries_[index].name.size());
+        const frame_trace::SlowScope slow('A', entries_[index].name, 3.0);
         try {
 #ifdef __SWITCH__
             return archive_->Read(index, std::span(static_cast<std::uint8_t *>(buffer), size));

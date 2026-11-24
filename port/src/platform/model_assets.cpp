@@ -1,3 +1,7 @@
+#include "diag/frame_trace.hpp"
+
+#include <chrono>
+#include <format>
 #include "common.h"
 
 #include <fastgltf/core.hpp>
@@ -2253,6 +2257,8 @@ bool StandardScaleOrder(Document &document, const fastgltf::Node &node) {
 
 mgCFrame *Instantiate(const std::shared_ptr<Document> &document, mgLoadData &load, std::string &error) {
     CT_PROFILE_ZONE("Instantiate model");
+    const std::string            slow_name = document->relative.generic_string();
+    const frame_trace::SlowScope slow('M', slow_name, 3.0);
     try {
         const auto &frames = document->metadata.at("frames");
         if (frames.empty() || (document->frame_nodes.empty() && document->asset.nodes.size() < document->node_offset + frames.size())) {
@@ -3217,8 +3223,72 @@ Json OriginalMotionName(const Json &custom, const Json &argument) {
 /**
  * Applies an ordered gameplay profile to native frames and gameplay records.
  */
+/**
+ * Adds up the time of each character profile command by its tag, for the frame trace's villager lines.
+ */
+class CommandTimes {
+public:
+    explicit CommandTimes(const std::shared_ptr<Document> &document) : document_(document), tracing_(frame_trace::Enabled()) {
+        if (tracing_) {
+            start_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    ~CommandTimes() {
+        if (!tracing_) {
+            return;
+        }
+        const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count();
+        if (total < 5.0) {
+            return;
+        }
+        std::string text = "profile " + document_->relative.generic_string() + ":";
+        for (const auto &[tag, ms] : times_) {
+            text += std::format(" {} {:.1f};", tag, ms);
+        }
+        frame_trace::Slow('V', text, total);
+    }
+
+    /** Times one command from construction to destruction. */
+    class Scope {
+    public:
+        Scope(CommandTimes &owner, const std::string &tag) : owner_(owner), tag_(tag) {
+            if (owner_.tracing_) {
+                start_ = std::chrono::steady_clock::now();
+            }
+        }
+        ~Scope() {
+            if (!owner_.tracing_) {
+                return;
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count();
+            for (auto &[tag, total] : owner_.times_) {
+                if (tag == tag_) {
+                    total += ms;
+                    return;
+                }
+            }
+            owner_.times_.emplace_back(tag_, ms);
+        }
+        Scope(const Scope &) = delete;
+        Scope &operator=(const Scope &) = delete;
+
+    private:
+        CommandTimes                         &owner_;
+        const std::string                    &tag_;
+        std::chrono::steady_clock::time_point start_{};
+    };
+
+private:
+    const std::shared_ptr<Document>                &document_;
+    bool                                            tracing_;
+    std::chrono::steady_clock::time_point           start_{};
+    std::vector<std::pair<std::string, double>>     times_;
+};
+
 void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &document, std::string_view profile,
                       std::string_view skin_name, const CharacterLoadOptions &options, bool skin) {
+    CommandTimes command_times(document);
     if (!options.model_memory) {
         throw std::runtime_error("character model arena required");
     }
@@ -3279,7 +3349,8 @@ void CharacterProfile(CCharacter2 &character, const std::shared_ptr<Document> &d
     // Actions of the current motion set by English name, for the KEY commands that follow.
     std::vector<character_motion::Action> slot_actions;
     for (const auto &command : commands) {
-        const auto tag_name = command.at("command").get<std::string>();
+        const auto                tag_name = command.at("command").get<std::string>();
+        const CommandTimes::Scope command_time(command_times, tag_name);
         if (skin && tag_name != "MODEL" && tag_name != "MOTION" && tag_name != "IMG" && tag_name != "IMG_END") {
             continue;
         }
@@ -3859,7 +3930,12 @@ bool LoadTextureSet(const std::filesystem::path &gltf, std::size_t index, mgCTex
 
 bool LoadCharacter(CCharacter2 &character, const std::filesystem::path &gltf, std::string_view profile, const CharacterLoadOptions &options, std::string &error) {
     return Attempt(error, [&] {
-        CharacterProfile(character, Read(gltf), profile, {}, options, false);
+        const std::string read_label = "read " + gltf.generic_string();
+        auto              document = [&] {
+            const frame_trace::SlowScope slow('V', read_label, 3.0);
+            return Read(gltf);
+        }();
+        CharacterProfile(character, document, profile, {}, options, false);
     });
 }
 

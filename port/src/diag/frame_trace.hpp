@@ -18,6 +18,10 @@
  *     a game frame that just ended
  *   N,t_us,text
  *     an event
+ *   Z,t_us,area,frame_ms,game zones,|,other-thread zones
+ *     a long game frame, every timing point over 0.3 ms ("name ms" pairs separated by ';')
+ *   L,t_us,kind,thread,ms,what
+ *     a slow single operation (see Slow); thread g the game thread, w any other
  */
 namespace frame_trace {
 
@@ -51,5 +55,52 @@ struct GameRecord {
 void Game(const GameRecord &record);
 
 void Note(std::string_view text);
+
+// A long game frame: every timing point on the game thread and the busiest on other threads, as "name ms, ...".
+void LongFrame(std::string_view area, double frame_ms, std::string_view game_zones, std::string_view other_zones);
+
+// A slow single operation, with what it worked on. kind: T texture document, M model build, A archive read,
+// F game file load, V villager step, U town update part, X other.
+void Slow(char kind, std::string_view what, double ms);
+
+// Times a scope and writes a Slow line when it runs at least min_ms. Cheap when the trace is off.
+class SlowScope {
+public:
+    SlowScope(char kind, std::string_view what, double min_ms = 3.0);
+    ~SlowScope();
+    SlowScope(const SlowScope &) = delete;
+    SlowScope &operator=(const SlowScope &) = delete;
+
+private:
+    char             kind_;
+    std::string_view what_;
+    double           min_ms_;
+    long long        start_ns_ = -1;
+};
+
+/**
+ * Splits one long function into laps for the trace: each Mark ends the lap since the last mark under its label, and
+ * when the whole run took at least min_ms the laps go out as a U line (Slow kind U). Labels must be string literals.
+ * Cheap when the trace is off.
+ */
+class Laps {
+public:
+    explicit Laps(const char *name, double min_ms = 40.0);
+    ~Laps();
+    Laps(const Laps &) = delete;
+    Laps &operator=(const Laps &) = delete;
+
+    void Mark(const char *label);
+
+private:
+    static constexpr int kMaxLaps = 32;
+    const char          *name_;
+    double               min_ms_;
+    long long            start_ns_ = -1;
+    long long            last_ns_ = 0;
+    int                  count_ = 0;
+    const char          *labels_[kMaxLaps] = {};
+    double               ms_[kMaxLaps] = {};
+};
 
 } // namespace frame_trace

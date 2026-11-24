@@ -34,9 +34,9 @@ enum class ConfigScreenWaitOverlap {
     Auto,
 };
 
-// video.frame_pacing: Smooth lets one more frame wait in the screen's queue, so a busy frame pair gets two screen
-// refreshes of work at one refresh more latency (Kazarov gfx::SetPresentQueueDepth). Low latency shows each frame
-// as soon as the previous one is on screen.
+// video.frame_pacing: kept so older config files still read. The Switch's screen keeps only the newest image queued
+// at each refresh, so Smooth (a present queue depth of two) lost every in-between frame; both now queue one image
+// at a time (Kazarov gfx::SetPresentQueueDepth(1)).
 enum class ConfigFramePacing {
     Smooth,
     LowLatency,
@@ -70,7 +70,7 @@ struct Config : HostSettings {
     // video.screen_wait_overlap: see ConfigScreenWaitOverlap.
     ConfigScreenWaitOverlap screen_wait_overlap = ConfigScreenWaitOverlap::Auto;
     // video.frame_pacing: see ConfigFramePacing.
-    ConfigFramePacing frame_pacing = ConfigFramePacing::Smooth;
+    ConfigFramePacing frame_pacing = ConfigFramePacing::LowLatency;
     ConfigRenderThread render_thread = ConfigRenderThread::Async;
     bool               debug_mode = false;
     bool               autosave = true;

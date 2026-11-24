@@ -1,3 +1,4 @@
+#include "diag/frame_trace.hpp"
 #include "common.h"
 #include "mw_runtime.h"
 
@@ -2450,6 +2451,7 @@ int MgTextureEnterDocument(mgCTextureManager *manager, std::string_view relative
                            mgCMemory *stack, mgCEnterIMGInfo *info) {
     CT_PROFILE_ZONE("Load texture document");
     CT_PROFILE_TEXT(relative_json_path.data(), relative_json_path.size());
+    const frame_trace::SlowScope slow('T', relative_json_path, 3.0);
     const auto *source = texture_catalog::Find(relative_json_path);
     if (!source) {
         CT_LOG_ERROR(Data, "texture: no native texture document for {}", relative_json_path);

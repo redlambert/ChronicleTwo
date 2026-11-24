@@ -168,7 +168,6 @@ bool                                            g_parts_fresh = false;
 bool                                            g_flare_this_frame = false;
 bool                                            g_flare_enabled = true;
 bool                                            g_screen_wait_overlap = true;
-bool                                            g_smooth_pacing = false;
 uint64_t                                        g_window_immediate_start = 0; // copied-vertex draws at window start
 uint64_t                                        g_window_overlap_start = 0;   // screen wait overlap leases at window start
 double                                          g_window_resume_start = 0.0;  // and the renderer's wait for them
@@ -314,6 +313,9 @@ void SampleZones() {
         g_area.zones[slot].other_ms += other_ms;
     }
 }
+
+// Game frames at least this long get their full breakdown in the frame trace.
+constexpr double kTraceLongFrameMs = 45.0;
 
 const char *ZoneName(std::size_t slot) {
     const char *name = gfx::profile::sites[slot].name;
@@ -740,13 +742,9 @@ void FollowFlareSetting(std::string_view area) {
     const bool overlap = mode == ConfigScreenWaitOverlap::On ||
                          (mode == ConfigScreenWaitOverlap::Auto && (area.starts_with("dungeon") || g_auto_overlap.on));
     gfx::SetScreenWaitOverlap(overlap);
-    const bool smooth = ConfigGet().frame_pacing == ConfigFramePacing::Smooth;
-    gfx::SetPresentQueueDepth(smooth ? 2 : 1);
-    if (smooth != g_smooth_pacing) {
-        g_smooth_pacing = smooth;
-        CT_LOG_INFO(Main, "diag: frame pacing {} (Display settings)", smooth ? "smooth, present queue depth 2" : "low latency, present queue depth 1");
-        frame_trace::Note(smooth ? "frame pacing smooth" : "frame pacing low latency");
-    }
+    // The frame trace showed the Switch's screen keeps only the newest image queued at each refresh: with two queued,
+    // every in-between frame was replaced by its end-of-frame image before scanout. One image at a time, always.
+    gfx::SetPresentQueueDepth(1);
     if (overlap != g_screen_wait_overlap) {
         g_screen_wait_overlap = overlap;
         CT_LOG_INFO(Main, "diag: screen wait overlap {} ({} in Display settings, area '{}')", overlap ? "on" : "off",
@@ -814,6 +812,11 @@ void Tick(int loop_no, std::string_view area, bool mark_held) {
         });
     }
     SampleZones();
+    // The frame trace gets every timing point of a long frame, not just the top five the log keeps.
+    if (frame_trace::Enabled() && frame_ms >= kTraceLongFrameMs) {
+        frame_trace::LongFrame(area, frame_ms, TopZonesOf(g_zone_frame, 64, 0.3, true),
+                               TopZonesOf(g_zone_other_frame, 24, 1.0, true));
+    }
     // Read every tick, so presents made while the game sat in a pause or menu never land on one play frame.
     // A held intermediate shows its endpoint's image again, so it is no new image on screen and is not counted.
     const PresentStats present_stats = PresentGetStats();

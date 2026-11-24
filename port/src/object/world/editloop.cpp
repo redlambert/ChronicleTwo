@@ -1,3 +1,4 @@
+#include "diag/frame_trace.hpp"
 #include "common.h"
 
 #include <algorithm>
@@ -1125,6 +1126,7 @@ int SubMapLoadStep() {
 
 int EditLoop() {
     CT_PROFILE_ZONE("Town update");
+    frame_trace::Laps laps("Town update");
     static int       old_cm;
     CMap            *map = {};
     CCharacter2     *chara = {};
@@ -1248,6 +1250,7 @@ int EditLoop() {
         wait_for_map = 1;
     }
 
+    laps.Mark("time and lighting");
     map_name = MainScene->GetMapName(MainScene->active_map);
 
     while (LoopCounter > 2 && LoopMode == EDIT_LOOP_WALK && map_name != nullptr && strcmp(map_name, "m01") == 0) {
@@ -1445,8 +1448,10 @@ int EditLoop() {
         break;
     }
 
+    laps.Mark("palm brinks street checks");
     section_prefetch::Report();
 
+    laps.Mark("prefetch report");
     if (SubMapLoadStep() != 0) {
         const auto held_start = TownSectionTimer::Clock::now();
         while (wait_for_map != 0 && SubMapLoadStep() != 0) {
@@ -1456,6 +1461,7 @@ int EditLoop() {
         }
     }
 
+    laps.Mark("section load step");
     if (LoopMode == EDIT_LOOP_WALK_MENU || LoopMode == EDIT_LOOP_EDIT_MENU) {
         PAUSE_INFO menu_pause{};
         menu_pause.scene = nullptr;
@@ -1547,6 +1553,7 @@ int EditLoop() {
             }
         }
 
+        laps.Mark("menu main loop");
         FadeOutForE3();
         MainScene->fade.FadeStep();
         MainScene->fade.Draw();
@@ -1559,6 +1566,7 @@ int EditLoop() {
         return TimeLimitCheck() != 0;
     }
 
+    laps.Mark("menu block");
     if (DebugFlag != 0 && EdDebugInfo.jump_map_no >= 0) {
         BurnEditParts();
         EditMapJump(EdDebugInfo.jump_map_no);
@@ -1567,6 +1575,7 @@ int EditLoop() {
         return 0;
     }
 
+    laps.Mark("debug jump");
     mgPlightEnable(0);
     MainScene->UpDateMapInfo();
     projection = mgGetProjection() + PhotoAddProjection();
@@ -1597,6 +1606,7 @@ int EditLoop() {
     pause.scene = MainScene;
     pause_enabled = 0;
 
+    laps.Mark("render info and thunder");
     if (PauseFlag == 0) {
         switch (ControlMode) {
             case EDIT_CONTROL_PLAYER:
@@ -1772,6 +1782,7 @@ int EditLoop() {
                 break;
         }
 
+        laps.Mark("control mode update");
         if (pause_enabled != 0 && (PadCtrl.Btn(PAD_BTN_PAUSE) != 0 || GamePad__2.Connect() == 0)) {
             PauseStart(&pause);
         }
@@ -1796,6 +1807,7 @@ int EditLoop() {
             MainScene->StayNearVillager(villager_position, stay);
         }
 
+        laps.Mark("walk character and stay villagers");
         if (LoopMode == EDIT_LOOP_WALK) {
             CT_PROFILE_ZONE("Town villager step");
             MainScene->StepVillager();
@@ -1807,6 +1819,7 @@ int EditLoop() {
             sgLoopSubGame2();
         }
 
+        laps.Mark("villager and sub-game steps");
         if (open_menu == 0 && LockChara == 0 && sgMenuOpenEnable() != 0 && change_mode == 0) {
             menu_requested = PadCtrl.Btn(PAD_BTN_MENU) != 0 || sgGetItemOver() != 0;
             menu_button = PadCtrl.Btn(PAD_BTN_MENU);
@@ -1882,11 +1895,13 @@ int EditLoop() {
             }
         }
 
+        laps.Mark("menu open check");
         if (open_menu != 0) {
             EditDrawFlag |= 0x1;
         }
     }
 
+    laps.Mark("update tail");
     mgFlushRenderInfo();
     {
         CT_DRAW_PART("Town draw");
@@ -1895,6 +1910,7 @@ int EditLoop() {
     }
     debug_closed = 0;
 
+    laps.Mark("town draw");
     if (DebugFlag != 0) {
         if (EditDebugMode() != 0 && EditDebugLoop(MainScene, &EdDebugInfo) != 0) {
             ControlMode = old_cm;
@@ -1915,6 +1931,7 @@ int EditLoop() {
         LightingEdit(MainScene);
     }
 
+    laps.Mark("debug and lighting edit");
     if (PauseFlag == 0) {
         if (LockChara == 0 && NowEditModeChg() == 0) {
             edit_enabled = 1;
@@ -2068,6 +2085,7 @@ int EditLoop() {
         MainScene->fade.FadeStep();
     }
 
+    laps.Mark("late update");
     MainScene->fade.Draw();
 
     if (PauseFlag != 0) {
@@ -2082,6 +2100,7 @@ int EditLoop() {
         }
     }
 
+    laps.Mark("fade");
     DrawEventEdit();
     FadeOutForE3();
 
@@ -2159,6 +2178,7 @@ int EditLoop() {
         }
     }
 
+    laps.Mark("event edit draw");
     if (DebugFlag != 0 && GamePad__2.On(PAD_SELECT) != 0 && GamePad__2.Down(PAD_START) != 0) {
         finish = 1;
     }

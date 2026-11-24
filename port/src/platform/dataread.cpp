@@ -1,3 +1,4 @@
+#include "diag/frame_trace.hpp"
 #include "common.h"
 
 #include <eekernel.h>
@@ -1098,6 +1099,7 @@ int LoadFile(char *path, std::span<u8> destination, int *out_size) {
 
 static int LoadFile2WithCapacity(char *path, void *buffer, std::size_t capacity, int *out_size, int mode) {
     CT_PROFILE_ZONE("Load asset");
+    const frame_trace::SlowScope slow('F', path != nullptr ? std::string_view(path) : std::string_view(), 3.0);
     if (out_size) {
         *out_size = 0;
     }

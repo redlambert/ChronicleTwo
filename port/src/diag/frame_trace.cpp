@@ -1,6 +1,8 @@
 #include "diag/frame_trace.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -112,6 +114,9 @@ private:
     std::thread             thread_;
 };
 
+// The game thread, as the first Game call found it, so a Slow line says which thread was slow.
+std::atomic<std::thread::id> game_thread{};
+
 Writer &TheWriter() {
     static Writer writer;
     return writer;
@@ -139,6 +144,9 @@ void Game(const GameRecord &record) {
     if (!writer.Enabled()) {
         return;
     }
+    if (game_thread.load(std::memory_order_relaxed) == std::thread::id{}) {
+        game_thread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+    }
     writer.Add(std::format("G,{},{},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{},{},{}\n", writer.Microseconds(), record.area,
                            record.frame_ms, record.logic_ms, record.lease_ms, record.locked_ms, record.wait_ms,
                            record.ticks, record.frames, record.draws));
@@ -150,6 +158,90 @@ void Note(std::string_view text) {
         return;
     }
     writer.Add(std::format("N,{},{}\n", writer.Microseconds(), text));
+}
+
+void LongFrame(std::string_view area, double frame_ms, std::string_view game_zones, std::string_view other_zones) {
+    Writer &writer = TheWriter();
+    if (!writer.Enabled()) {
+        return;
+    }
+    std::string game(game_zones);
+    std::string other(other_zones);
+    std::ranges::replace(game, ',', ';');
+    std::ranges::replace(other, ',', ';');
+    writer.Add(std::format("Z,{},{},{:.1f},{},|,{}\n", writer.Microseconds(), area, frame_ms, game, other));
+}
+
+void Slow(char kind, std::string_view what, double ms) {
+    Writer &writer = TheWriter();
+    if (!writer.Enabled()) {
+        return;
+    }
+    std::string text(what);
+    std::ranges::replace(text, ',', ';');
+    std::ranges::replace(text, '\n', ' ');
+    const char thread = std::this_thread::get_id() == game_thread.load(std::memory_order_relaxed) ? 'g' : 'w';
+    writer.Add(std::format("L,{},{},{},{:.2f},{}\n", writer.Microseconds(), kind, thread, ms, text));
+}
+
+namespace {
+
+long long NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+
+SlowScope::SlowScope(char kind, std::string_view what, double min_ms) : kind_(kind), what_(what), min_ms_(min_ms) {
+    if (Enabled()) {
+        start_ns_ = NowNs();
+    }
+}
+
+SlowScope::~SlowScope() {
+    if (start_ns_ < 0) {
+        return;
+    }
+    const double ms = static_cast<double>(NowNs() - start_ns_) / 1.0e6;
+    if (ms >= min_ms_) {
+        Slow(kind_, what_, ms);
+    }
+}
+
+Laps::Laps(const char *name, double min_ms) : name_(name), min_ms_(min_ms) {
+    if (Enabled()) {
+        start_ns_ = NowNs();
+        last_ns_ = start_ns_;
+    }
+}
+
+void Laps::Mark(const char *label) {
+    if (start_ns_ < 0 || count_ >= kMaxLaps) {
+        return;
+    }
+    const long long now = NowNs();
+    labels_[count_] = label;
+    ms_[count_] = static_cast<double>(now - last_ns_) / 1.0e6;
+    ++count_;
+    last_ns_ = now;
+}
+
+Laps::~Laps() {
+    if (start_ns_ < 0) {
+        return;
+    }
+    Mark("(end)");
+    const double total = static_cast<double>(last_ns_ - start_ns_) / 1.0e6;
+    if (total < min_ms_) {
+        return;
+    }
+    std::string text = std::string(name_) + ":";
+    for (int i = 0; i < count_; ++i) {
+        if (ms_[i] >= 0.5) {
+            text += std::format(" {} {:.1f};", labels_[i], ms_[i]);
+        }
+    }
+    Slow('U', text, total);
 }
 
 } // namespace frame_trace
