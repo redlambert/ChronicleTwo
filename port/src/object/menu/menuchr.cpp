@@ -8114,15 +8114,14 @@ constexpr gfx::InterpKey kBannerInterpKey = 0x514342414E4E4552;
 
 // Character-change effect timing in game frames, adapted from Dark Cloud's GAME_TASK_CHARA_CHANGED.
 constexpr int kChangeFadeFrames = 24;
-// The swap glows in cream white, the colour of its original stars, and in dungeons the new character gets the
-// item-use recovery sparkle in a matching cream variant (variant 2, added in eff01.assets/n_heal.luau).
+// The swap glows in cream white, the colour of its original stars.
 constexpr s16 kChangeTint[3] = {255, 244, 208};
-char          kChangeEffectName[] = "\x92\xCA\x8F\xED\x89\xF1\x95\x9C";
-constexpr int kChangeEffectCream = 2;
 
 bool change_fx_pending = false;
 int  change_fx_loop = -1;
 int  change_fade_frames = 0;
+// Set by a finished character change (not a quick loadout), so the new character lands with a sound.
+bool change_landing_sound = false;
 
 // Glow-up before a quick change, in gameplay ticks (30 a second).
 constexpr int kWindUpTicks = 8;
@@ -8135,16 +8134,27 @@ int  windup_request = -1;
 int  windup_ticks = 0;
 int  windup_loop = -1;
 int  windup_poll_frame = -1;
-// Set when the glow-up's last tick started the cream sparkle, so it carries on over the new character instead of
-// starting again after the swap.
-bool windup_sparked = false;
-// The charge attack releases of Max (c01tame) and Monica (c02tame), by their effect names. Started at the press,
-// the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen holds
-// through the pause; the orbs then bloom on the new character. Neither plays a sound or hits.
+// Max's charge attack release (c01tame), by its effect name, played on every swap whoever is changing. Started at
+// the press, the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen
+// holds through the pause; the orbs then bloom on the new character. The effect itself plays no sound and never hits.
 char kSwapReleaseMax[] = "\x83\x86\x83\x8A\x83\x58\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
-char kSwapReleaseMonica[] = "\x83\x82\x83\x6A\x83\x4A\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
+// The motion whose sound keys carry the charge attack release sound ("ため攻撃").
+char kChargeReleaseMotion[] = "\x82\xBD\x82\xDF\x8D\x55\x8C\x82";
+
+/**
+ * One motion sound found on a character's charge attack release.
+ */
+struct ReleaseSound {
+    int  se_no = -1;          /**< Sound number in its bank, or -1 when none was found. */
+    bool battle_bank = false; /**< On the scene's shared battle bank, so it plays whoever stands there. */
+};
+
+// Max's charge attack release sound, read from his motion sounds whenever he is the one standing there, and played
+// as the new character appears.
+ReleaseSound max_release_sound;
 
 void StartSwapRelease();
+void RememberMaxReleaseSound();
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
@@ -8296,6 +8306,7 @@ int KeyMainCharaBG() {
                 if (!windup_sounded) {
                     MenuSePlay(SYSTEM_SE_TRANSFORM);
                 }
+                change_landing_sound = true;
             }
             windup_sounded = false;
             PortQuickLoadoutReloadDone();
@@ -8361,7 +8372,6 @@ int PortQuickChangeWindUp(int request, bool eligible) {
             windup_ready = false;
             windup_request = -1;
             windup_sounded = false;
-            windup_sparked = false;
             return -1;
         }
 
@@ -8382,7 +8392,6 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 
     windup_active = true;
     windup_ready = false;
-    windup_sparked = false;
     windup_request = request;
     windup_ticks = 0;
     windup_loop = PortLoopNo;
@@ -8402,7 +8411,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 namespace {
 
 /**
- * Reports whether a swap plays the outgoing character's charge attack release; DC2_SWAP_RELEASE=0 turns it off.
+ * Reports whether a swap plays Max's charge attack release; DC2_SWAP_RELEASE=0 turns it off.
  */
 bool SwapReleaseEnabled() {
     static const bool enabled = [] {
@@ -8413,39 +8422,210 @@ bool SwapReleaseEnabled() {
 }
 
 /**
- * Starts the outgoing character's charge attack release on the player: Monica's for Monica, Max's otherwise (the
- * Ridepod has none of its own). Dungeons only; nothing where the effect is not loaded.
+ * Colour the swap's release is tinted by, per red, green and blue channel, where 128 leaves a channel as the
+ * game draws it. DC2_SWAP_RELEASE_TINT=r,g,b sets it; unset, the release keeps its own colours.
  */
-void StartSwapRelease() {
-    if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
+struct ReleaseTint {
+    float rgb[3] = {128.0f, 128.0f, 128.0f};
+    bool  active = false;
+};
+
+const ReleaseTint &SwapReleaseTint() {
+    static const ReleaseTint tint = [] {
+        ReleaseTint result;
+        const char *setting = std::getenv("DC2_SWAP_RELEASE_TINT");
+        int         red = 0;
+        int         green = 0;
+        int         blue = 0;
+        if (setting != nullptr && std::sscanf(setting, "%d,%d,%d", &red, &green, &blue) == 3) {
+            result.rgb[0] = static_cast<float>(std::clamp(red, 0, 255));
+            result.rgb[1] = static_cast<float>(std::clamp(green, 0, 255));
+            result.rgb[2] = static_cast<float>(std::clamp(blue, 0, 255));
+            result.active = true;
+        }
+        return result;
+    }();
+    return tint;
+}
+
+/**
+ * Tints one release's own copy of the effect model. The copy has its own frame attributes, so the charge attack
+ * in battle keeps its colours. The tint scales each frame's colour, so the textures keep their shading.
+ */
+void TintSwapRelease(_EFF_SCRIPT &effect) {
+    const ReleaseTint &tint = SwapReleaseTint();
+    if (!tint.active || effect.chara == nullptr || effect.chara->CObjectFrame::frame == nullptr) {
         return;
     }
-    CScene   *scene = GetMainScene();
-    const int owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
-    char     *name = GetUserDataMan()->active_chr_no == 1 ? kSwapReleaseMonica : kSwapReleaseMax;
-    const int base = FxScriptMan->SearchBaseNo(name);
-    const bool started = base >= 0 && FxScriptMan->CreateEffSpt(base, owner, 0) != nullptr;
+
+    mgCFrame  *root = effect.chara->CObjectFrame::frame;
+    mgCFrame **frames = root->frame_list;
+    const int  count = frames != nullptr && root->frame_num > 0 ? root->frame_num : 1;
+    int        tinted = 0;
+    int        unlit = 0;
+    for (int i = 0; i < count; ++i) {
+        mgCFrame *frame = frames != nullptr && root->frame_num > 0 ? frames[i] : root;
+        if (frame == nullptr || frame->attr == nullptr) {
+            continue;
+        }
+        for (int channel = 0; channel < 3; ++channel) {
+            frame->attr->color[channel] = frame->attr->color[channel] * tint.rgb[channel] / 128.0f;
+        }
+        tinted++;
+        if (frame->attr->no_light != 0) {
+            unlit++;
+        }
+    }
 
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: charge release {} at the press", started ? "plays" : "is not loaded and does not play");
+        CT_LOG_INFO(Menu, "quick change: charge release tinted {:.0f},{:.0f},{:.0f} on {} of {} model parts ({} drawn unlit)",
+                    tint.rgb[0], tint.rgb[1], tint.rgb[2], tinted, count, unlit);
     }
 }
 
 /**
- * Starts the dungeon's cream item-use sparkle on the player; false where there is none (towns, or not loaded).
- * The by-name CreateEffSpt returns the owner slot, which is -1 for an effect not registered to one, so success is
- * read from the effect itself.
+ * Starts Max's charge attack release on the player, whoever is changing. Dungeons only; nothing where the effect
+ * is not loaded.
  */
-bool StartChangeSparkle() {
-    if (PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr ||
-        FxScriptMan->CreateEffSpt(FxScriptMan->SearchBaseNo(kChangeEffectName), 0, 0) == nullptr) {
-        return false;
+void StartSwapRelease() {
+    RememberMaxReleaseSound();
+    if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
+        return;
     }
-    FxScriptMan->SetScriptTargetId(0, -1, -1);
-    FxScriptMan->SetValue(0, kChangeEffectCream, 0, -1);
-    return true;
+    CScene      *scene = GetMainScene();
+    const int    owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
+    const int    base = FxScriptMan->SearchBaseNo(kSwapReleaseMax);
+    _EFF_SCRIPT *effect = base >= 0 ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
+    if (effect != nullptr) {
+        TintSwapRelease(*effect);
+    }
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "quick change: Max's charge release {} at the press",
+                    effect != nullptr ? "plays" : "is not loaded and does not play");
+    }
+}
+
+/**
+ * The player character standing in the scene now, or null.
+ */
+CCharacter2 *PlayerCharacter() {
+    CScene *scene = GetMainScene();
+    if (scene == nullptr) {
+        return nullptr;
+    }
+    return scene->GetCharacter(scene->player_chara >= 0 ? scene->player_chara : 0);
+}
+
+/**
+ * Reads the first sound that a character's charge attack release motion plays, from its motion sound keys.
+ */
+ReleaseSound FindChargeReleaseSound(CCharacter2 &chara, std::string &found) {
+    ReleaseSound     result;
+    int              set = -1;
+    CHRINFO_KEY_SET *motion = chara.GetKeyListPtr(kChargeReleaseMotion, &set);
+    if (motion == nullptr || set < 0 || set >= CHARA_MOTION_SET_MAX || chara.se_list[set] == nullptr) {
+        return result;
+    }
+
+    const CHRINFO_SE *key = chara.se_list[set];
+    for (int i = 0; i < chara.se_num[set]; ++i, ++key) {
+        if (key->frame < static_cast<float>(motion->start_frame) || key->frame > static_cast<float>(motion->end_frame)) {
+            continue;
+        }
+        const bool own = key->kind == CHRINFO_SE_SOUND || key->kind == CHRINFO_SE_SOUND_FOOT;
+        const bool battle = key->kind == CHRINFO_SE_SOUND_2;
+        if (!own && !battle) {
+            continue;
+        }
+        found += std::format(" {}:{}@{:.0f}", battle ? "battle" : "own", key->se_no, key->frame - motion->start_frame);
+        if (result.se_no < 0) {
+            result.se_no = key->se_no;
+            result.battle_bank = battle;
+        }
+    }
+    return result;
+}
+
+/**
+ * Remembers Max's charge attack release sound while he is the one standing there, so a later swap to Monica or the
+ * Ridepod can still play it if it is on the shared battle bank.
+ */
+void RememberMaxReleaseSound() {
+    if (PortLoopNo != LOOP_DUNGEON || GetUserDataMan()->active_chr_no != USER_CHARA_MAX) {
+        return;
+    }
+    CCharacter2 *chara = PlayerCharacter();
+    if (chara == nullptr) {
+        return;
+    }
+
+    std::string        found;
+    const ReleaseSound sound = FindChargeReleaseSound(*chara, found);
+    if (sound.se_no < 0) {
+        return;
+    }
+    max_release_sound = sound;
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "quick change: Max's charge release sounds (bank:number@frame):{}", found);
+    }
+}
+
+/**
+ * Plays the landing sound as the new character appears: Max's charge attack release sound, unless
+ * DC2_SWAP_LAND_SOUND says otherwise ("0" for none, or "battle:N" or "system:N" for one sound to try).
+ */
+void PlaySwapLandingSound() {
+    if (PortLoopNo != LOOP_DUNGEON) {
+        return;
+    }
+    RememberMaxReleaseSound();
+
+    CScene *scene = GetMainScene();
+    if (scene == nullptr) {
+        return;
+    }
+
+    const char *setting = std::getenv("DC2_SWAP_LAND_SOUND");
+    int         number = -1;
+    if (setting != nullptr && std::string_view(setting) == "0") {
+        return;
+    }
+    if (setting != nullptr && std::sscanf(setting, "battle:%d", &number) == 1) {
+        sndSePlay(scene->se_battle_id, number, 0);
+        return;
+    }
+    if (setting != nullptr && std::sscanf(setting, "system:%d", &number) == 1) {
+        MenuSePlay(number);
+        return;
+    }
+
+    CCharacter2 *chara = PlayerCharacter();
+    const bool   max_here = GetUserDataMan()->active_chr_no == USER_CHARA_MAX;
+    const char  *outcome = "not found on Max's charge attack, so none plays";
+    if (max_release_sound.se_no >= 0 && max_release_sound.battle_bank) {
+        sndSePlay(scene->se_battle_id, max_release_sound.se_no, 0);
+        outcome = "played from the battle bank";
+    } else if (max_release_sound.se_no >= 0 && max_here && chara != nullptr) {
+        sndSePlay(chara->sound_info.se_bank, max_release_sound.se_no, 0);
+        outcome = "played from Max's own bank";
+    } else if (max_release_sound.se_no >= 0) {
+        outcome = "in Max's own bank, which is not loaded for this character, so none plays";
+    }
+
+    static int logged_for = -1;
+    const int  active = GetUserDataMan()->active_chr_no;
+    if (logged_for != active) {
+        logged_for = active;
+        CT_LOG_INFO(Menu, "quick change: landing sound for character {}: {}", active, outcome);
+    }
 }
 
 /**
@@ -8466,7 +8646,6 @@ void StepQuickChangeWindUp() {
         windup_ready = false;
         windup_request = -1;
         windup_sounded = false;
-        windup_sparked = false;
         return;
     }
 
@@ -8478,12 +8657,6 @@ void StepQuickChangeWindUp() {
     fade.elapsed = windup_ticks;
 
     if (windup_ticks >= kWindUpTicks) {
-        if (!windup_ready && !windup_sparked) {
-            // The snap: the sparkle bursts on the fully lit character one tick before the swap, so the frame the
-            // screen holds through the swap's pause shows it at its start. It targets the player, so it stays on
-            // the character that stands there after the swap.
-            windup_sparked = StartChangeSparkle();
-        }
         windup_ready = true;
     }
 }
@@ -8594,18 +8767,11 @@ void PortStepQuickChangeEffect() {
         }
         change_fade_frames = kChangeFadeFrames;
 
-        // The dungeon loads the item-use effect with the floor (dc2::dungeon setup); town has none, so a town
-        // swap shows the glow alone. A glow-up already started it on its last tick; otherwise (a swap from the
-        // menu) it starts now and follows the character that now stands there.
-        const bool sparked = windup_sparked;
-        windup_sparked = false;
-        if (sparked || StartChangeSparkle()) {
-            static bool logged = false;
-            if (!logged) {
-                logged = true;
-                CT_LOG_INFO(Menu, "quick change: cream sparkle {}", sparked ? "started with the glow's last tick, held through the swap"
-                                                                                  : "started on the new character");
-            }
+        // Max's charge release, started at the press, blooms around the new character now; its sound lands with it.
+        // A quick loadout keeps the same character, so it gets the glow without the sound.
+        if (change_landing_sound) {
+            change_landing_sound = false;
+            PlaySwapLandingSound();
         }
     }
 
