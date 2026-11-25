@@ -674,7 +674,7 @@ void LogShaderStats() {
         return;
     }
     const bool                                            all = g.perf.stats == "*";
-    const std::array<std::pair<uint32_t, VkPipeline>, 23> extras = {
+    const std::array<std::pair<uint32_t, VkPipeline>, 24> extras = {
         {
          {kNearSafeFogScope, g.near_safe_fog_pipelines[0]},
          {kNearSafeFogAlphaScope, g.near_safe_fog_pipelines[1]},
