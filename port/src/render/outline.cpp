@@ -289,12 +289,14 @@ bool OutlineEdgeDepthTest() {
 }
 
 /**
- * Reports whether an outline's copies and body go out as one composite draw where the renderer offers it.
+ * Reports whether an outline's copies and body go out as one composite draw where the renderer offers it. Off
+ * unless DC2_OUTLINE_ONE_PASS=1: on the Switch the composite cost five times the separate layers, since the copies'
+ * depth test and cell tiling skip most of their texture reads and the one pass reads every tap everywhere.
  */
 bool OutlineOnePass() {
     static const bool enabled = [] {
         const char *setting = std::getenv("DC2_OUTLINE_ONE_PASS");
-        return setting == nullptr || std::string_view(setting) != "0";
+        return setting != nullptr && std::string_view(setting) == "1";
     }();
     return enabled && gfx::OutlineCompositeAvailable();
 }

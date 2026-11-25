@@ -8135,9 +8135,16 @@ int  windup_request = -1;
 int  windup_ticks = 0;
 int  windup_loop = -1;
 int  windup_poll_frame = -1;
-// Set when the glow-up's last tick started the cream sparkle, so it is already playing in the image the screen
-// holds while the swap loads, and carries on over the new character instead of starting again after it.
+// Set when the glow-up's last tick started the cream sparkle, so it carries on over the new character instead of
+// starting again after the swap.
 bool windup_sparked = false;
+// The charge attack releases of Max (c01tame) and Monica (c02tame), by their effect names. Started at the press,
+// the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen holds
+// through the pause; the orbs then bloom on the new character. Neither plays a sound or hits.
+char kSwapReleaseMax[] = "\x83\x86\x83\x8A\x83\x58\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
+char kSwapReleaseMonica[] = "\x83\x82\x83\x6A\x83\x4A\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
+
+void StartSwapRelease();
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
@@ -8382,6 +8389,7 @@ int PortQuickChangeWindUp(int request, bool eligible) {
     // The transformation sound starts with the glow, so it plays through the loading pause instead of after it.
     MenuSePlay(SYSTEM_SE_TRANSFORM);
     windup_sounded = true;
+    StartSwapRelease();
     static bool logged = false;
     if (!logged) {
         logged = true;
@@ -8392,6 +8400,38 @@ int PortQuickChangeWindUp(int request, bool eligible) {
 }
 
 namespace {
+
+/**
+ * Reports whether a swap plays the outgoing character's charge attack release; DC2_SWAP_RELEASE=0 turns it off.
+ */
+bool SwapReleaseEnabled() {
+    static const bool enabled = [] {
+        const char *setting = std::getenv("DC2_SWAP_RELEASE");
+        return setting == nullptr || std::string_view(setting) != "0";
+    }();
+    return enabled;
+}
+
+/**
+ * Starts the outgoing character's charge attack release on the player: Monica's for Monica, Max's otherwise (the
+ * Ridepod has none of its own). Dungeons only; nothing where the effect is not loaded.
+ */
+void StartSwapRelease() {
+    if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
+        return;
+    }
+    CScene   *scene = GetMainScene();
+    const int owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
+    char     *name = GetUserDataMan()->active_chr_no == 1 ? kSwapReleaseMonica : kSwapReleaseMax;
+    const int base = FxScriptMan->SearchBaseNo(name);
+    const bool started = base >= 0 && FxScriptMan->CreateEffSpt(base, owner, 0) != nullptr;
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "quick change: charge release {} at the press", started ? "plays" : "is not loaded and does not play");
+    }
+}
 
 /**
  * Starts the dungeon's cream item-use sparkle on the player; false where there is none (towns, or not loaded).
