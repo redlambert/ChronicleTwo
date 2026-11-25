@@ -1,7 +1,9 @@
 #include "common.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <format>
 #include <string>
 #include <utility>
 
@@ -62,9 +64,17 @@ void Change(int direction) {
     Config config = ConfigGet();
     if (StepRow(CurrentRow(), config, direction)) {
         Save(config);
-        // The swap landing sound row plays the sound it lands on instead of the cursor sound.
-        if (CurrentRow().key == "audio.swap_sound" && config.swap_sound_set != 0) {
-            QuickChangeSoundPlay(config.swap_sound_set, config.swap_sound);
+        // A swap sound row plays the sound it lands on instead of the cursor sound, stopping the one before, which
+        // can be a looping sound such as the charge attack's hold.
+        const std::string &key = CurrentRow().key;
+        int                group = -1;
+        for (int index = 0; index < SWAP_GROUP_COUNT; ++index) {
+            if (key == std::format("game.swap_{}_sound", std::array{"human", "ridepod", "monster"}[index])) {
+                group = index;
+            }
+        }
+        if (group >= 0) {
+            QuickChangeSoundPreview(config.swap_sound_set[group], config.swap_sound[group]);
         } else {
             MenuSePlay(SYSTEM_SE_CURSOR);
         }
@@ -79,6 +89,7 @@ void BeginBinding() {
 }
 
 void Close() {
+    QuickChangeSoundPreview(0, 0);
     g_screen.open = false;
     g_screen.binding = -1;
     g_wait_source.clear();

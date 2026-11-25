@@ -39,7 +39,7 @@ int PortQuickChangeWindUp(int request, bool eligible);
 void PortFinishQuickChange();
 
 /**
- * The landing sound sets for the Audio page's swap sound option: 1 the dungeon's shared battle sounds, 2 the menu and
+ * The landing sound sets for the Game page's swap sound rows: 1 the dungeon's shared battle sounds, 2 the menu and
  * system sounds. How many sounds a set holds where it is loaded now (0 where it is not loaded).
  */
 int QuickChangeSoundCount(int set);
@@ -48,6 +48,7 @@ int QuickChangeSoundCount(int set);
  */
 bool QuickChangeSoundPlayable(int set, int number);
 /**
- * Plays one sound of a landing sound set, as the option's preview or as the swap's landing sound.
+ * Plays one sound of a landing sound set as the Game page's preview, first stopping the preview before it, which
+ * can loop; set 0 only stops it.
  */
-void QuickChangeSoundPlay(int set, int number);
+void QuickChangeSoundPreview(int set, int number);

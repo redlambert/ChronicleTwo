@@ -138,18 +138,30 @@ TEST_F(PlatformConfig, FullFileRoundTrips) {
     ASSERT_TRUE(SettingsGet() == expected);
 }
 
-TEST_F(PlatformConfig, SwapSoundIsOffByDefaultAndRoundTrips) {
-    EXPECT_EQ(ConfigParse("").swap_sound_set, 0);
-    const Config battle = ConfigParse(R"({"audio":{"swap_sound":"battle:12"}})");
-    EXPECT_EQ(battle.swap_sound_set, 1);
-    EXPECT_EQ(battle.swap_sound, 12);
-    EXPECT_EQ(ConfigParse(ConfigSerialize(battle)), battle);
-    const Config system = ConfigParse(R"({"audio":{"swap_sound":"System:3"}})");
-    EXPECT_EQ(system.swap_sound_set, 2);
-    EXPECT_EQ(system.swap_sound, 3);
+TEST_F(PlatformConfig, SwapSettingsHaveDefaultsAndRoundTrip) {
+    const Config defaults = ConfigParse("");
+    EXPECT_EQ(defaults.swap_sound_set, (std::array<int, SWAP_GROUP_COUNT>{}));
+    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_HUMAN], kSwapEffectMaxRelease);
+    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_RIDEPOD], kSwapEffectRidepodFlash);
+    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_MONSTER], kSwapEffectMonicaMagic);
+
+    const Config chosen = ConfigParse(
+        R"({"game":{"swap_ridepod_sound":"battle:12","swap_monster_sound":"System:3","swap_monster_effect":"dust"}})");
+    EXPECT_EQ(chosen.swap_sound_set[SWAP_GROUP_RIDEPOD], 1);
+    EXPECT_EQ(chosen.swap_sound[SWAP_GROUP_RIDEPOD], 12);
+    EXPECT_EQ(chosen.swap_sound_set[SWAP_GROUP_MONSTER], 2);
+    EXPECT_EQ(chosen.swap_sound[SWAP_GROUP_MONSTER], 3);
+    EXPECT_EQ(chosen.swap_effect[SWAP_GROUP_MONSTER], 5);
+    EXPECT_EQ(ConfigParse(ConfigSerialize(chosen)), chosen);
+
+    // The first build's single setting is the human swap's sound.
+    EXPECT_EQ(ConfigParse(R"({"audio":{"swap_sound":"battle:7"}})").swap_sound[SWAP_GROUP_HUMAN], 7);
+
     for (const char *value : {"null", "12", "\"loud\"", "\"battle:\"", "\"battle:-1\"", "\"battle:99999\""}) {
-        EXPECT_EQ(ConfigParse(std::string("{\"audio\":{\"swap_sound\":") + value + "}}").swap_sound_set, 0) << value;
+        EXPECT_EQ(ConfigParse(std::string("{\"game\":{\"swap_human_sound\":") + value + "}}").swap_sound_set[SWAP_GROUP_HUMAN], 0)
+            << value;
     }
+    EXPECT_EQ(ConfigParse(R"({"game":{"swap_human_effect":"sparkles"}})").swap_effect[SWAP_GROUP_HUMAN], kSwapEffectMaxRelease);
 }
 
 TEST_F(PlatformConfig, TextFontIsSharpByDefaultAndRoundTrips) {

@@ -242,18 +242,21 @@ bool ApplyLogCategories(Config &config, const Json &categories) {
     return true;
 }
 
-// The highest sound number audio.swap_sound accepts.
+// The highest sound number a swap sound setting accepts.
 constexpr int kSwapSoundMax = 4095;
 
-// audio.swap_sound: "off", "battle:N" or "system:N".
-bool ReadSwapSound(const Json &value, Config &config) {
+// The settings file names of the swap groups, in SwapGroup order.
+constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupNames = {"human", "ridepod", "monster"};
+
+// game.swap_<group>_sound: "off", "battle:N" or "system:N".
+bool ReadSwapSound(const Json &value, Config &config, int group) {
     if (!value.is_string()) {
         return false;
     }
     const std::string text = Lower(value.get<std::string>());
     if (text == "off") {
-        config.swap_sound_set = 0;
-        config.swap_sound = 0;
+        config.swap_sound_set[group] = 0;
+        config.swap_sound[group] = 0;
         return true;
     }
     const std::pair<std::string_view, int> sets[] = {{"battle:", 1}, {"system:", 2}};
@@ -271,21 +274,56 @@ bool ReadSwapSound(const Json &value, Config &config) {
         if (number > kSwapSoundMax) {
             return false;
         }
-        config.swap_sound_set = set;
-        config.swap_sound = number;
+        config.swap_sound_set[group] = set;
+        config.swap_sound[group] = number;
         return true;
     }
     return false;
 }
 
-std::string SwapSoundName(const Config &config) {
-    if (config.swap_sound_set == 1) {
-        return std::format("battle:{}", config.swap_sound);
+std::string SwapSoundName(const Config &config, int group) {
+    if (config.swap_sound_set[group] == 1) {
+        return std::format("battle:{}", config.swap_sound[group]);
     }
-    if (config.swap_sound_set == 2) {
-        return std::format("system:{}", config.swap_sound);
+    if (config.swap_sound_set[group] == 2) {
+        return std::format("system:{}", config.swap_sound[group]);
     }
     return "off";
+}
+
+// game.swap_<group>_effect: a kSwapEffects key.
+bool ReadSwapEffect(const Json &value, Config &config, int group) {
+    if (!value.is_string()) {
+        return false;
+    }
+    const std::string text = Lower(value.get<std::string>());
+    for (std::size_t index = 0; index < kSwapEffects.size(); ++index) {
+        if (kSwapEffects[index].key == text) {
+            config.swap_effect[group] = static_cast<int>(index);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Reads a game.swap_<group>_effect or game.swap_<group>_sound setting; false when the name is neither.
+bool ApplySwapSetting(Config &config, std::string_view name, const Json &value, bool &read) {
+    // The first build kept the sound for every swap under audio.swap_sound; it is now the human swap's.
+    if (name == "audio.swap_sound") {
+        read = ReadSwapSound(value, config, SWAP_GROUP_HUMAN);
+        return true;
+    }
+    for (int group = 0; group < SWAP_GROUP_COUNT; ++group) {
+        if (name == std::format("game.swap_{}_effect", kSwapGroupNames[group])) {
+            read = ReadSwapEffect(value, config, group);
+            return true;
+        }
+        if (name == std::format("game.swap_{}_sound", kSwapGroupNames[group])) {
+            read = ReadSwapSound(value, config, group);
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Apply(Config &config, std::string_view name, const Json &value) {
@@ -299,8 +337,8 @@ bool Apply(Config &config, std::string_view name, const Json &value) {
     if (name == "game.floor_info_monsters") {
         return ReadBool(value, config.floor_info_monsters);
     }
-    if (name == "audio.swap_sound") {
-        return ReadSwapSound(value, config);
+    if (bool read = false; name.find("swap_") != std::string_view::npos && ApplySwapSetting(config, name, value, read)) {
+        return read;
     }
     if (name == "game.more_monsters") {
         return ReadBool(value, config.more_monsters);
@@ -652,7 +690,12 @@ std::string ConfigSerialize(const Config &config) {
     root["game"]["transformation_stats"] = config.transformation_stats;
     root["game"]["transformation_exp"] = config.transformation_exp;
     root["game"]["shared_badge_exp"] = config.shared_badge_exp;
-    root["audio"]["swap_sound"] = SwapSoundName(config);
+    for (int group = 0; group < SWAP_GROUP_COUNT; ++group) {
+        const std::string_view group_name = kSwapGroupNames[group];
+        const int              effect = std::clamp(config.swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
+        root["game"][std::format("swap_{}_effect", group_name)] = std::string(kSwapEffects[effect].key);
+        root["game"][std::format("swap_{}_sound", group_name)] = SwapSoundName(config, group);
+    }
     root["video"]["vsync"] = s.present_mode == ConfigPresentMode::Fifo;
     root["video"]["interpolation"] = config.interpolation;
     root["video"]["lens_flare"] = config.lens_flare;

@@ -713,6 +713,8 @@ Writes are atomic: the file is written as `config.json.tmp` and renamed over `co
 | `game.language` | int | 0 | 0 to 5 | 0 shows the language menu at every boot; 1 to 5 start in English, French, German, Italian or Spanish without asking. Choosing on the menu stores the choice |
 | `game.skip_intro` | bool | false | | boot past the Sony Computer Entertainment text, the copyright notice and the Level-5 logo to the title screen |
 | `game.floor_info_monsters` | bool | false | | Triangle on a dungeon floor's information lists its monsters (spoilers); see "Floor monster list" |
+| `game.swap_human_effect`, `game.swap_ridepod_effect`, `game.swap_monster_effect` | string | max_release, ridepod_flash, monica_magic | off, max_release, monica_release, monica_magic, ridepod_flash, dust, guard, heal | effect a quick change plays around the character from its press: into Max or Monica, Max into the Ridepod, and Monica into her monster form; each is one of the dungeon's always-loaded effects |
+| `game.swap_human_sound`, `game.swap_ridepod_sound`, `game.swap_monster_sound` | string | off | off, battle:N, system:N | sound each kind of quick change plays as the new character appears: one of the dungeon's shared battle sounds or the menu and system sounds; the Game page plays each as it is chosen, and the first build's `audio.swap_sound` is read as the human swap's |
 | `game.more_monsters` | bool | false | | a dungeon floor holds up to 60 monsters instead of 24, and every monster in range shows and acts; see "Dungeon monster limit" |
 | `video.vsync` | bool | true | true, false | V-Sync: FIFO presentation when on, immediate when off. An older `video.present_mode` is read as on for `fifo` and off otherwise |
 | `video.interpolation` | bool | true (false on iOS) | | interpolate display frames between ticks |
@@ -728,7 +730,6 @@ Writes are atomic: the file is written as `config.json.tmp` and renamed over `co
 | `audio.master_volume` | number | 1 | 0 to 1 | final mixer gain, independent of the game's fades and core volumes; applies live |
 | `audio.sound` | string | stereo | stereo, surround | output layout; read and saved, not yet applied (the output is stereo) |
 | `audio.soundtrack` | string | ps2 | ps2, custom | `custom` plays recordings from `soundtrack/` beside the save root, as named by its `soundtrack.json` |
-| `audio.swap_sound` | string | off | off, battle:N, system:N | Sound a quick change plays as the new character appears: one of the dungeon's shared battle sounds or the menu and system sounds. The Audio page plays each as it is chosen |
 | `audio.dualsense_speaker` | bool | true | | plays the Ridepod's voice lines, the treasure chests' opening and the menus' sound effects on a DualSense speaker; see "Controller speaker" |
 | `audio.controller_volume` | number | 1 | 0 to 2 | controller speaker gain, applied after `audio.master_volume` |
 | `input.mouse_sensitivity` | number | 0.1 | above 0 | mouse look speed |
@@ -804,9 +805,9 @@ The **PC SETTINGS** entry and the page are drawn at the UI scale, or smaller whe
 | Page | Settings |
 |---|---|
 | Display | Windowed/fullscreen, resolution, FIFO/mailbox/immediate, frame cap, interpolation, auto/4:3 aspect, UI scale, original/sharp text font, FPS counter |
-| Audio | Master volume, PS2/custom soundtrack and the swap landing sound |
+| Audio | Master volume and PS2/custom soundtrack |
 | Controls | Mouse sensitivity, Y inversion and capture; menu pointer speed and acceleration; stick sensitivity and X/Y inversion; button symbols and glyph style |
-| Game | Autosave, quick loadout title, skip intro, auto-use event items, floor monster list, more monsters, transformation stats, transformation EXP, shared badge EXP and debug mode |
+| Game | Autosave, quick loadout title, skip intro, auto-use event items, floor monster list, more monsters, transformation stats, transformation EXP, shared badge EXP, the effect and sound of each kind of quick change, and debug mode |
 | Keyboard | Keyboard and mouse bindings for pad buttons, movement, look, walking, FPS, developer and mode debug menus, and quick loadout |
 | Gamepad | Controller bindings for pad buttons, FPS, developer and mode debug menus, gyro hold and quick loadout |
 

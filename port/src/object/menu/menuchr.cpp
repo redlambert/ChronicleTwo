@@ -8142,6 +8142,53 @@ int  windup_poll_frame = -1;
 // the press, the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen
 // holds through the pause; the orbs then bloom on the new character. The effect itself plays no sound and never hits.
 char kSwapReleaseMax[] = "\x83\x86\x83\x8A\x83\x58\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
+char kSwapReleaseMonica[] = "\x83\x82\x83\x6A\x83\x4A\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
+char kSwapMonicaMagic[] = "\x83\x82\x83\x6A\x83\x4A\x96\x82\x96\x40\x81\x7C\x97\xAD\x82\xDF";
+char kSwapRidepodFlash[] = "\x83\x7D\x83\x59\x83\x8B\x83\x74\x83\x89\x83\x62\x83\x56\x83\x85";
+char kSwapDust[] = "\x8D\xBB\x89\x8C";
+char kSwapGuard[] = "\x83\x4B\x81\x5B\x83\x68\x83\x47\x83\x74\x83\x46\x83\x4E\x83\x67\x82\x60";
+char kSwapHeal[] = "\x92\xCA\x8F\xED\x89\xF1\x95\x9C";
+
+/**
+ * How the swap starts one kSwapEffects entry: its Shift-JIS effect name (Max's and Monica's charge releases,
+ * Monica's magic charge, the Ridepod's muzzle flash, dust, the guard sparkle and the item-use recovery sparkle), and
+ * whether its position vectors sit at the body's middle instead of the feet. The charge releases follow the
+ * character themselves.
+ */
+struct SwapEffectStart {
+    char *name;
+    bool  body_middle;
+};
+
+const std::array<SwapEffectStart, kSwapEffects.size()> kSwapEffectStarts = {{
+    {nullptr, false},
+    {kSwapReleaseMax, false},
+    {kSwapReleaseMonica, false},
+    {kSwapMonicaMagic, true},
+    {kSwapRidepodFlash, true},
+    {kSwapDust, false},
+    {kSwapGuard, true},
+    {kSwapHeal, false},
+}};
+
+// Marks the swap's own effects in their fourth work vector component, which the game sets to 1 and the scripts
+// never read, so a pointer is only trusted while the effect it names is still the swap's.
+constexpr float kSwapEffectMark = 2468.0f;
+// Game frames a swap's effect and landing sound may run: longer effects, and looping sounds such as the charge
+// attack's hold, are stopped then.
+constexpr int kSwapEffectTicks = 75;
+
+_EFF_SCRIPT *swap_effect = nullptr;
+int          swap_effect_ticks = 0;
+// The kind of swap under way (SwapGroup), set at the press for the landing sound.
+int          swap_group = SWAP_GROUP_HUMAN;
+// The landing sound playing, for stopping it: its bank, or -1, and number.
+unsigned int landing_bank = static_cast<unsigned int>(-1);
+int          landing_number = 0;
+int          landing_ticks = 0;
+// The options page's sound preview playing, for stopping it before the next one.
+unsigned int preview_bank = static_cast<unsigned int>(-1);
+int          preview_number = 0;
 void StartSwapRelease();
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
@@ -8585,24 +8632,91 @@ void RecolorSwapRelease(_EFF_SCRIPT &effect) {
  * Starts Max's charge attack release on the player, whoever is changing. Dungeons only; nothing where the effect
  * is not loaded.
  */
+/**
+ * Whether the swap's effect is still running and still the one the swap started.
+ */
+bool SwapEffectLive() {
+    if (swap_effect == nullptr || FxScriptMan == nullptr) {
+        return false;
+    }
+    for (_EFF_SCRIPT *effect = FxScriptMan->head; effect != nullptr; effect = effect->next) {
+        if (effect == swap_effect) {
+            return effect->work_vect2[3] == kSwapEffectMark;
+        }
+    }
+    return false;
+}
+
+/**
+ * Starts the effect chosen for this kind of swap on the player: what the Game page's swap effect row names for
+ * the swap's group. Dungeons only; nothing where the effect is not loaded.
+ */
 void StartSwapRelease() {
+    const int target = PortLoopNo == LOOP_DUNGEON ? dc2::dungeon::ChangeSetUnitCore(windup_request) : -1;
+    swap_group = target == USER_CHARA_ROBO      ? SWAP_GROUP_RIDEPOD
+                 : target == USER_CHARA_MONSTER ? SWAP_GROUP_MONSTER
+                                                : SWAP_GROUP_HUMAN;
     if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
         return;
     }
-    CScene      *scene = GetMainScene();
-    const int    owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
-    const int    base = FxScriptMan->SearchBaseNo(kSwapReleaseMax);
-    _EFF_SCRIPT *effect = base >= 0 ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
-    if (effect != nullptr) {
-        RecolorSwapRelease(*effect);
-        TintSwapRelease(*effect);
+    const int choice = std::clamp(ConfigGet().swap_effect[swap_group], 0, static_cast<int>(kSwapEffects.size()) - 1);
+    const SwapEffectStart &start = kSwapEffectStarts[choice];
+    if (start.name == nullptr) {
+        return;
     }
 
-    static bool logged = false;
-    if (!logged) {
-        logged = true;
-        CT_LOG_INFO(Menu, "quick change: Max's charge release {} at the press",
-                    effect != nullptr ? "plays" : "is not loaded and does not play");
+    CScene      *scene = GetMainScene();
+    const int    owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
+    const int    base = FxScriptMan->SearchBaseNo(start.name);
+    _EFF_SCRIPT *effect = base >= 0 ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
+    if (effect != nullptr) {
+        // Effects that are not the charge releases are placed by their work vectors, which the game's own callers
+        // set to a hand, a muzzle or the feet: here, the character's feet or the middle of the body.
+        CCharacter2 *chara = scene != nullptr ? scene->GetCharacter(owner) : nullptr;
+        if (chara != nullptr) {
+            sceVu0FVECTOR position{};
+            chara->GetPosition(position);
+            if (start.body_middle) {
+                position[1] += chara->GetBodyHeight() * 0.5f;
+            }
+            for (int axis = 0; axis < 3; ++axis) {
+                effect->work_vect1[axis] = position[axis];
+                effect->work_vect2[axis] = position[axis];
+            }
+        }
+        effect->work_vect2[3] = kSwapEffectMark;
+        swap_effect = effect;
+        swap_effect_ticks = kSwapEffectTicks;
+        if (choice == kSwapEffectMaxRelease) {
+            RecolorSwapRelease(*effect);
+            TintSwapRelease(*effect);
+        }
+    }
+
+    CT_LOG_INFO(Menu, "quick change: {} swap plays {} at the press{}",
+                swap_group == SWAP_GROUP_RIDEPOD ? "Ridepod" : swap_group == SWAP_GROUP_MONSTER ? "monster" : "human",
+                kSwapEffects[choice].label, effect != nullptr ? "" : ", but it is not loaded here");
+}
+
+/**
+ * Counts down the swap's effect and landing sound, stopping either when its time is up; away from the dungeon they
+ * are forgotten, since the floor's effects and sounds are gone.
+ */
+void StepSwapEffectLife() {
+    if (PortLoopNo != LOOP_DUNGEON) {
+        swap_effect = nullptr;
+        landing_bank = static_cast<unsigned int>(-1);
+        return;
+    }
+    if (swap_effect != nullptr && --swap_effect_ticks <= 0) {
+        if (SwapEffectLive()) {
+            FxScriptMan->DeleteEffSpt(swap_effect);
+        }
+        swap_effect = nullptr;
+    }
+    if (landing_bank != static_cast<unsigned int>(-1) && --landing_ticks <= 0) {
+        sndSeStop(landing_bank, landing_number, 0);
+        landing_bank = static_cast<unsigned int>(-1);
     }
 }
 
@@ -8621,22 +8735,25 @@ unsigned int SwapSoundBank(int set) {
 }
 
 /**
- * Plays the landing sound chosen on the Audio page (audio.swap_sound) as the new character appears.
+ * Plays the landing sound chosen on the Game page for this kind of swap as the new character appears.
  */
 void PlaySwapLandingSound() {
     const Config &config = ConfigGet();
-    if (PortLoopNo != LOOP_DUNGEON || config.swap_sound_set == 0) {
+    const int     set = config.swap_sound_set[swap_group];
+    const int     number = config.swap_sound[swap_group];
+    if (PortLoopNo != LOOP_DUNGEON || set == 0) {
         return;
     }
-    QuickChangeSoundPlay(config.swap_sound_set, config.swap_sound);
-
-    static bool logged = false;
-    if (!logged) {
-        logged = true;
-        CT_LOG_INFO(Menu, "quick change: landing sound {} {} {}", config.swap_sound_set == 1 ? "battle" : "system",
-                    config.swap_sound,
-                    QuickChangeSoundPlayable(config.swap_sound_set, config.swap_sound) ? "plays" : "is not loaded here");
+    const unsigned int bank = SwapSoundBank(set);
+    const bool         playable = sndSeAvailable(bank, number);
+    if (playable) {
+        sndSePlay(bank, number, 0);
+        landing_bank = bank;
+        landing_number = number;
+        landing_ticks = kSwapEffectTicks;
     }
+    CT_LOG_INFO(Menu, "quick change: landing sound {} {} {}", set == 1 ? "battle" : "system", number,
+                playable ? "plays" : "is not loaded here");
 }
 
 /**
@@ -8750,6 +8867,7 @@ void PortFinishQuickChange() {
 // the character's own palette animation fades from white, with a splash of stars around it.
 void PortStepQuickChangeEffect() {
     StepQuickChangeWindUp();
+    StepSwapEffectLife();
 
     if (PortLoopNo != change_fx_loop) {
         StopChangeEffect();
@@ -8803,10 +8921,16 @@ bool QuickChangeSoundPlayable(int set, int number) {
     return sndSeAvailable(SwapSoundBank(set), number);
 }
 
-void QuickChangeSoundPlay(int set, int number) {
+void QuickChangeSoundPreview(int set, int number) {
+    if (preview_bank != static_cast<unsigned int>(-1)) {
+        sndSeStop(preview_bank, preview_number, 0);
+        preview_bank = static_cast<unsigned int>(-1);
+    }
     const unsigned int bank = SwapSoundBank(set);
-    if (sndSeAvailable(bank, number)) {
+    if (set != 0 && sndSeAvailable(bank, number)) {
         sndSePlay(bank, number, 0);
+        preview_bank = bank;
+        preview_number = number;
     }
 }
 

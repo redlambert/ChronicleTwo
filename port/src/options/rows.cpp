@@ -118,21 +118,49 @@ bool SoundUsable(int set, int number) {
     return QuickChangeSoundCount(set) <= 0 || QuickChangeSoundPlayable(set, number);
 }
 
-// Off, then the battle sounds, then the system sounds, and round to Off.
-Row SwapSound() {
-    Row row{.key = "audio.swap_sound", .label = "Swap landing sound", .help = "Plays as the new character appears after a swap.\nLeft/Right plays each. Battle sounds play in dungeons."};
-    row.value = [](const Config &c) {
-        if (c.swap_sound_set == 1) {
-            return std::format("Battle {}", c.swap_sound);
+// The Game page's names for the swap groups, in SwapGroup order.
+constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupLabels = {"Into human", "Into Ridepod", "Into monster"};
+constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupKeys = {"human", "ridepod", "monster"};
+constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupHelp = {
+    "Into Max or Monica.",
+    "Max into the Ridepod.",
+    "Monica into her monster form.",
+};
+
+// The effect a kind of swap plays around the character, stepping through kSwapEffects.
+Row SwapEffect(int group) {
+    Row row{.key = std::format("game.swap_{}_effect", kSwapGroupKeys[group]),
+            .label = std::format("{}: effect", kSwapGroupLabels[group]),
+            .help = std::format("{}\nPlays around the character from the swap's press.", kSwapGroupHelp[group])};
+    row.value = [group](const Config &c) {
+        const int effect = std::clamp(c.swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
+        return std::string(kSwapEffects[effect].label);
+    };
+    row.step = [group](Config &c, int direction) {
+        const int count = static_cast<int>(kSwapEffects.size());
+        c.swap_effect[group] = ((std::clamp(c.swap_effect[group], 0, count - 1) + direction) % count + count) % count;
+    };
+    return row;
+}
+
+// The sound a kind of swap plays as the new character appears: Off, then the battle sounds, then the system sounds,
+// and round to Off.
+Row SwapSound(int group) {
+    Row row{.key = std::format("game.swap_{}_sound", kSwapGroupKeys[group]),
+            .label = std::format("{}: sound", kSwapGroupLabels[group]),
+            .help = std::format("{} Plays as the new character appears.\nLeft/Right plays each; battle sounds play in dungeons.", kSwapGroupHelp[group])};
+    row.value = [group](const Config &c) {
+        if (c.swap_sound_set[group] == 1) {
+            return std::format("Battle {}", c.swap_sound[group]);
         }
-        if (c.swap_sound_set == 2) {
-            return std::format("System {}", c.swap_sound);
+        if (c.swap_sound_set[group] == 2) {
+            return std::format("System {}", c.swap_sound[group]);
         }
         return std::string("Off");
     };
-    row.step = [](Config &c, int direction) {
-        int set = c.swap_sound_set;
-        int number = c.swap_sound;
+    row.step = [group](Config &c, int direction) {
+        int set = c.swap_sound_set[group];
+        int number = c.swap_sound[group];
         for (int tried = 0; tried < 2 * (kUnloadedSoundSet + 4096); ++tried) {
             if (direction > 0) {
                 if (set == 0) {
@@ -165,8 +193,8 @@ Row SwapSound() {
                 break;
             }
         }
-        c.swap_sound_set = set;
-        c.swap_sound = number;
+        c.swap_sound_set[group] = set;
+        c.swap_sound[group] = number;
     };
     return row;
 }
@@ -413,7 +441,6 @@ std::vector<Page> MakePages() {
         {.name = "Audio",    .rows = {
                               Number<&Config::master_volume>("audio.master_volume", "Master volume", "Adjusts all sound, including music and movies.", {0, .05, .1, .15, .2, .25, .3, .35, .4, .45, .5, .55, .6, .65, .7, .75, .8, .85, .9, .95, 1}, 100, "%"),
                               Choice<&Config::soundtrack>("audio.soundtrack", "Soundtrack", "Applies when the next song starts; no restart needed.\nCustom needs soundtrack/soundtrack.json recordings.", {"PS2", "Custom"}),
-                              SwapSound(),
                               Choice<&Config::dualsense_speaker>("audio.dualsense_speaker", "DualSense Speaker", "Plays sound effects on a DualSense controller speaker.\nTurn off if you want to keep vanilla experience", {"Off", "On"}),
                               Number<&Config::controller_volume>("audio.controller_volume", "Controller volume", "DualSense speaker volume, after master volume.", {0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1, 1.25, 1.5, 1.75, 2}, 100, "%"),
                           }      },
@@ -446,6 +473,12 @@ std::vector<Page> MakePages() {
                              Choice<&Config::transformation_stats>("game.transformation_stats", "Transformation stats", "Monster attack grows twice as fast per level.\nMonica's defence is used when it is higher.", {"Off", "On"}),
                              Choice<&Config::transformation_exp>("game.transformation_exp", "Transformation EXP", "Monster badges gain twice the absorption\nwhile Monica is transformed.", {"Off", "On"}),
                              Choice<&Config::shared_badge_exp>("game.shared_badge_exp", "Shared badge EXP", "A quarter of Monica's absorption also goes\nto every other monster badge.", {"Off", "On"}),
+                             SwapEffect(SWAP_GROUP_HUMAN),
+                             SwapSound(SWAP_GROUP_HUMAN),
+                             SwapEffect(SWAP_GROUP_RIDEPOD),
+                             SwapSound(SWAP_GROUP_RIDEPOD),
+                             SwapEffect(SWAP_GROUP_MONSTER),
+                             SwapSound(SWAP_GROUP_MONSTER),
                              Choice<&Config::debug_mode>("game.debug_mode", "Debug mode", "Unlocks the developer menu and debug controls.\nThe boot unlock applies from the next start.", {"Off", "On"}),
                          }        },
         {.name = "Keyboard", .rows = Bindings()           },

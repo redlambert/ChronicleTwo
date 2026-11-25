@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <string_view>
 
@@ -8,6 +9,7 @@
 #endif
 
 #include "log/log_config.hpp"
+#include "object/character/swap_effects.hpp"
 #include "platform/settings.hpp"
 
 // Native gameplay always runs at the NTSC field rate, independently of configuration.
@@ -92,10 +94,14 @@ struct Config : HostSettings {
     bool         transformation_stats = false; /**< Applies faster badge attack growth and Monica's defence when higher. */
     bool         transformation_exp = false;   /**< Doubles absorption earned by the active transformation badge. */
     bool         shared_badge_exp = false;     /**< Shares a quarter of Monica's absorption with other unlocked badges. */
-    // audio.swap_sound: the sound a quick change plays as the new character appears: "off", "battle:N" (the dungeon's
-    // shared battle sounds) or "system:N" (the menu and system sounds).
-    int          swap_sound_set = 0; /**< 0 none, 1 battle sounds, 2 system sounds. */
-    int          swap_sound = 0;     /**< Sound number within the set. */
+    // Per kind of quick change (SwapGroup: into Max or Monica, into the Ridepod, into the monster form), the effect it
+    // plays around the character (game.swap_<group>_effect, a kSwapEffects key) and the sound it plays as the new
+    // character appears (game.swap_<group>_sound: "off", "battle:N" for the dungeon's shared battle sounds or
+    // "system:N" for the menu and system sounds).
+    std::array<int, SWAP_GROUP_COUNT> swap_effect = {kSwapEffectMaxRelease, kSwapEffectRidepodFlash,
+                                                     kSwapEffectMonicaMagic}; /**< kSwapEffects index. */
+    std::array<int, SWAP_GROUP_COUNT> swap_sound_set{};                       /**< 0 none, 1 battle sounds, 2 system sounds. */
+    std::array<int, SWAP_GROUP_COUNT> swap_sound{};                           /**< Sound number within the set. */
     ConfigAspect aspect = ConfigAspect::Auto;
     float        ui_scale = 1.0f;
     bool         font_sharp = true;
