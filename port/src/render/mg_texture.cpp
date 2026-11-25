@@ -1761,8 +1761,19 @@ void MgTexturePixelsChanged(const mgCTexture *texture) {
 
 namespace {
 /**
+ * Where one pixel of a variant level sits within the texture's own image, which can fill only part of a padded
+ * canvas: its column and row, and the image's width and height at that level, all in pixels of the level.
+ */
+struct VariantPixel {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
+/**
  * Enters a recoloured copy of a 32-bit texture into the source's block. recolor is called for every pixel with its
- * RGBA bytes, its row and the height of its level.
+ * RGBA bytes and its place in the image.
  */
 template <typename Recolor>
 mgCTexture *CreateRecoloredVariant(const mgCTexture *source, char *name, Recolor &&recolor) {
@@ -1790,16 +1801,20 @@ mgCTexture *CreateRecoloredVariant(const mgCTexture *source, char *name, Recolor
                         source->width * 4);
         }
     }
-    // The texture's own rows can fill only part of a padded canvas.
+    // The texture's own pixels can fill only part of a padded canvas.
+    const float used_width = static_cast<float>(source->width) / static_cast<float>(1u << source->tex0.TW);
     const float used_height = static_cast<float>(source->height) / static_cast<float>(1u << source->tex0.TH);
     for (size_t mip = 0; mip < pixels.levels.size(); ++mip) {
         auto          &mip_pixels = pixels.levels[mip];
         const uint32_t canvas_width = std::max(1u, pixels.width >> mip);
         const uint32_t canvas_height = static_cast<uint32_t>(mip_pixels.size() / 4 / canvas_width);
-        const float    height = static_cast<float>(canvas_height) * used_height;
+        VariantPixel   place;
+        place.width = static_cast<float>(canvas_width) * used_width;
+        place.height = static_cast<float>(canvas_height) * used_height;
         for (std::size_t i = 0; i < mip_pixels.size(); i += 4) {
-            const uint32_t row = static_cast<uint32_t>(i / 4 / canvas_width);
-            recolor(mip_pixels.data() + i, static_cast<float>(row), height);
+            place.x = static_cast<float>(i / 4 % canvas_width);
+            place.y = static_cast<float>(i / 4 / canvas_width);
+            recolor(mip_pixels.data() + i, place);
         }
     }
     u_long128 *images[MG_TEXTURE_LEVEL_MAX] = {};
@@ -1821,7 +1836,7 @@ mgCTexture *CreateRecoloredVariant(const mgCTexture *source, char *name, Recolor
 } // namespace
 
 mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, MgTextureColorMode mode) {
-    return CreateRecoloredVariant(source, name, [mode](u8 *color, float /*row*/, float /*height*/) {
+    return CreateRecoloredVariant(source, name, [mode](u8 *color, const VariantPixel & /*place*/) {
         const int grey = (color[0] + color[1] + color[2]) / 3;
         switch (mode) {
             case MgTextureColorMode::IconHighlight:
@@ -1851,8 +1866,8 @@ mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, Mg
 }
 
 mgCTexture *MgTextureCreateHueVariant(const mgCTexture *source, char *name, const MgTextureHueShift &shift) {
-    return CreateRecoloredVariant(source, name, [&shift](u8 *color, float row, float height) {
-        if (row >= height * shift.top_fraction) {
+    return CreateRecoloredVariant(source, name, [&shift](u8 *color, const VariantPixel &place) {
+        if (place.y >= place.height * shift.top_fraction) {
             return;
         }
         // RGB to hue, saturation and value, all from 0 to 1.
@@ -1887,6 +1902,39 @@ mgCTexture *MgTextureCreateHueVariant(const mgCTexture *source, char *name, cons
                                  {low, falling, value}, {rising, low, value},  {value, low, falling}};
         for (int channel = 0; channel < 3; ++channel) {
             color[channel] = static_cast<u8>(std::clamp(rgb[index][channel] * 255.0f + 0.5f, 0.0f, 255.0f));
+        }
+    });
+}
+
+mgCTexture *MgTextureCreateImageVariant(const mgCTexture *source, char *name, const std::vector<uint8_t> &rgba,
+                                        uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0 || rgba.size() < static_cast<std::size_t>(width) * height * 4) {
+        return nullptr;
+    }
+    return CreateRecoloredVariant(source, name, [&](u8 *color, const VariantPixel &place) {
+        // Averages the picture's pixels under this one, so smaller levels stay smooth.
+        const float scale_x = static_cast<float>(width) / std::max(place.width, 1.0f);
+        const float scale_y = static_cast<float>(height) / std::max(place.height, 1.0f);
+        const auto  left = static_cast<uint32_t>(place.x * scale_x);
+        const auto  top = static_cast<uint32_t>(place.y * scale_y);
+        if (left >= width || top >= height) {
+            color[0] = color[1] = color[2] = color[3] = 0;
+            return;
+        }
+        const uint32_t right = std::clamp(static_cast<uint32_t>((place.x + 1.0f) * scale_x), left + 1, width);
+        const uint32_t bottom = std::clamp(static_cast<uint32_t>((place.y + 1.0f) * scale_y), top + 1, height);
+        uint32_t       sum[4] = {};
+        for (uint32_t y = top; y < bottom; ++y) {
+            for (uint32_t x = left; x < right; ++x) {
+                const uint8_t *pixel = rgba.data() + (static_cast<std::size_t>(y) * width + x) * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    sum[channel] += pixel[channel];
+                }
+            }
+        }
+        const uint32_t count = (right - left) * (bottom - top);
+        for (int channel = 0; channel < 4; ++channel) {
+            color[channel] = static_cast<u8>(sum[channel] / count);
         }
     });
 }

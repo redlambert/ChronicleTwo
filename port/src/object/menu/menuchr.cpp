@@ -66,6 +66,7 @@
 #include "pal_timing.hpp"
 #include "platform/arena.hpp"
 #include "platform/config.hpp"
+#include "platform/datapacks.hpp"
 #include "platform/game_loop_state.hpp"
 #include "platform/model_assets.hpp"
 #include "prespr.hpp"
@@ -8473,7 +8474,7 @@ void TintSwapRelease(_EFF_SCRIPT &effect) {
 }
 
 /**
- * Reports whether the swap's release draws its main swirls in violet; DC2_SWAP_RELEASE_VIOLET=0 keeps them gold.
+ * Reports whether the swap's release uses its own recoloured picture; DC2_SWAP_RELEASE_VIOLET=0 keeps the game's.
  */
 bool SwapVioletEnabled() {
     static const bool enabled = [] {
@@ -8483,11 +8484,46 @@ bool SwapVioletEnabled() {
     return enabled;
 }
 
+// Alec's own recolour of c01tame's picture for the swap (violet swirls, blue streaks, a green orb and a gold
+// starburst), read from a datapack because it is made from the game's art and stays out of the repository.
+constexpr const char *kSwapPicturePath = "textures/dungeon/eff_script/c01tame_swap.png";
+
 /**
- * Returns the violet copy of the release's picture, entering it the first time a floor needs it. The main swirl
- * band fills the top quarter of c01tame's picture; only that part is recoloured, so the red streaks and the ground
- * glows, which read lower parts, keep their colours. The copy lives in the picture's own block, so it is freed
- * with the floor's effects.
+ * The datapack's swap picture, read and decoded the first time a swap needs it; empty when no active pack has it.
+ */
+struct SwapPicture {
+    std::vector<uint8_t> rgba;
+    uint32_t             width = 0;
+    uint32_t             height = 0;
+};
+
+const SwapPicture &SwapPackPicture() {
+    static const SwapPicture picture = [] {
+        SwapPicture result;
+        const auto  file = datapacks::Resolve(kSwapPicturePath);
+        if (!file) {
+            CT_LOG_INFO(Menu, "quick change: no datapack holds {}, so the swirls use the built-in violet", kSwapPicturePath);
+            return result;
+        }
+        std::vector<uint8_t> bytes;
+        std::string          error;
+        if (!vfs::Read(*file, bytes, 16ull * 1024 * 1024)
+            || !datapacks::DecodePng(bytes, result.width, result.height, result.rgba, error)) {
+            CT_LOG_WARN(Menu, "quick change: {} could not be read ({}), so the swirls use the built-in violet",
+                        kSwapPicturePath, error);
+            return SwapPicture{};
+        }
+        CT_LOG_INFO(Menu, "quick change: swap picture {} ({}x{}) from a datapack", kSwapPicturePath, result.width,
+                    result.height);
+        return result;
+    }();
+    return picture;
+}
+
+/**
+ * Returns the swap's copy of the release's picture, entering it the first time a floor needs it: the datapack's
+ * picture when an active pack holds one, else a built-in violet that recolours only the main swirl band (the top
+ * quarter of c01tame's picture). The copy lives in the picture's own block, so it is freed with the floor's effects.
  */
 mgCTexture *SwapVioletTexture(mgCTexture *source) {
     char name[sizeof(source->name)];
@@ -8495,7 +8531,13 @@ mgCTexture *SwapVioletTexture(mgCTexture *source) {
     if (mgCTexture *found = mgTexManager.GetTexture(name, source->block); found != nullptr) {
         return found;
     }
-    // Turns the band's olive, gold and orange into blue-violet through magenta, as in the preview Alec chose.
+    const SwapPicture &picture = SwapPackPicture();
+    if (!picture.rgba.empty()) {
+        if (mgCTexture *made = MgTextureCreateImageVariant(source, name, picture.rgba, picture.width, picture.height)) {
+            return made;
+        }
+    }
+    // Turns the band's olive, gold and orange into blue-violet through magenta.
     constexpr MgTextureHueShift kViolet{.hue_turns = 0.68f, .saturation = 1.4f, .top_fraction = 0.25f};
     return MgTextureCreateHueVariant(source, name, kViolet);
 }
@@ -8534,8 +8576,8 @@ void RecolorSwapRelease(_EFF_SCRIPT &effect) {
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: charge release violet on {} materials{}", recolored,
-                    recolored == 0 ? " (picture not recoloured, swirls stay gold)" : "");
+        CT_LOG_INFO(Menu, "quick change: charge release recoloured on {} materials{}", recolored,
+                    recolored == 0 ? " (picture not recoloured, the effect keeps the game's colours)" : "");
     }
 }
 
