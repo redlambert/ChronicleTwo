@@ -1759,7 +1759,13 @@ void MgTexturePixelsChanged(const mgCTexture *texture) {
     }
 }
 
-mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, MgTextureColorMode mode) {
+namespace {
+/**
+ * Enters a recoloured copy of a 32-bit texture into the source's block. recolor is called for every pixel with its
+ * RGBA bytes, its row and the height of its level.
+ */
+template <typename Recolor>
+mgCTexture *CreateRecoloredVariant(const mgCTexture *source, char *name, Recolor &&recolor) {
     if (!source || !source->image[0] || source->bpp != 32 || source->width <= 0 || source->height <= 0) {
         return nullptr;
     }
@@ -1784,34 +1790,16 @@ mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, Mg
                         source->width * 4);
         }
     }
-    for (auto &mip_pixels : pixels.levels) {
+    // The texture's own rows can fill only part of a padded canvas.
+    const float used_height = static_cast<float>(source->height) / static_cast<float>(1u << source->tex0.TH);
+    for (size_t mip = 0; mip < pixels.levels.size(); ++mip) {
+        auto          &mip_pixels = pixels.levels[mip];
+        const uint32_t canvas_width = std::max(1u, pixels.width >> mip);
+        const uint32_t canvas_height = static_cast<uint32_t>(mip_pixels.size() / 4 / canvas_width);
+        const float    height = static_cast<float>(canvas_height) * used_height;
         for (std::size_t i = 0; i < mip_pixels.size(); i += 4) {
-            auto     *color = mip_pixels.data() + i;
-            const int grey = (color[0] + color[1] + color[2]) / 3;
-            switch (mode) {
-                case MgTextureColorMode::IconHighlight:
-                    if (grey > 8 && color[2] != 0) {
-                        color[2] = 255;
-                    }
-                    break;
-                case MgTextureColorMode::Grey:
-                    color[0] = color[1] = color[2] = grey / 16 * 16;
-                    break;
-                case MgTextureColorMode::Sepia: {
-                    const int level = grey / 16 + 1;
-                    color[0] = static_cast<u8>(30.0f + 12.2f * level);
-                    color[1] = static_cast<u8>(20.0f + 8.75f * level);
-                    color[2] = static_cast<u8>(20.0f + 6.75f * level);
-                    break;
-                }
-                case MgTextureColorMode::PartyLocked: {
-                    const int level = grey / 8 + 1;
-                    color[0] = static_cast<u8>(7.75f * level);
-                    color[1] = static_cast<u8>(5.625f * level);
-                    color[2] = static_cast<u8>(4.6875f * level);
-                    break;
-                }
-            }
+            const uint32_t row = static_cast<uint32_t>(i / 4 / canvas_width);
+            recolor(mip_pixels.data() + i, static_cast<float>(row), height);
         }
     }
     u_long128 *images[MG_TEXTURE_LEVEL_MAX] = {};
@@ -1829,6 +1817,78 @@ mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, Mg
         ResolveTexture(texture);
     }
     return texture;
+}
+} // namespace
+
+mgCTexture *MgTextureCreateColorVariant(const mgCTexture *source, char *name, MgTextureColorMode mode) {
+    return CreateRecoloredVariant(source, name, [mode](u8 *color, float /*row*/, float /*height*/) {
+        const int grey = (color[0] + color[1] + color[2]) / 3;
+        switch (mode) {
+            case MgTextureColorMode::IconHighlight:
+                if (grey > 8 && color[2] != 0) {
+                    color[2] = 255;
+                }
+                break;
+            case MgTextureColorMode::Grey:
+                color[0] = color[1] = color[2] = grey / 16 * 16;
+                break;
+            case MgTextureColorMode::Sepia: {
+                const int level = grey / 16 + 1;
+                color[0] = static_cast<u8>(30.0f + 12.2f * level);
+                color[1] = static_cast<u8>(20.0f + 8.75f * level);
+                color[2] = static_cast<u8>(20.0f + 6.75f * level);
+                break;
+            }
+            case MgTextureColorMode::PartyLocked: {
+                const int level = grey / 8 + 1;
+                color[0] = static_cast<u8>(7.75f * level);
+                color[1] = static_cast<u8>(5.625f * level);
+                color[2] = static_cast<u8>(4.6875f * level);
+                break;
+            }
+        }
+    });
+}
+
+mgCTexture *MgTextureCreateHueVariant(const mgCTexture *source, char *name, const MgTextureHueShift &shift) {
+    return CreateRecoloredVariant(source, name, [&shift](u8 *color, float row, float height) {
+        if (row >= height * shift.top_fraction) {
+            return;
+        }
+        // RGB to hue, saturation and value, all from 0 to 1.
+        const float red = color[0] / 255.0f;
+        const float green = color[1] / 255.0f;
+        const float blue = color[2] / 255.0f;
+        const float value = std::max({red, green, blue});
+        const float range = value - std::min({red, green, blue});
+        if (value <= 0.0f || range <= 0.0f) {
+            return;
+        }
+        float hue = 0.0f;
+        if (value == red) {
+            hue = (green - blue) / range / 6.0f;
+        } else if (value == green) {
+            hue = ((blue - red) / range + 2.0f) / 6.0f;
+        } else {
+            hue = ((red - green) / range + 4.0f) / 6.0f;
+        }
+        hue = hue + shift.hue_turns;
+        hue = hue - std::floor(hue);
+        const float saturation = std::min(1.0f, range / value * shift.saturation);
+
+        // Back to RGB.
+        const float sector = hue * 6.0f;
+        const int   index = static_cast<int>(sector) % 6;
+        const float part = sector - std::floor(sector);
+        const float low = value * (1.0f - saturation);
+        const float falling = value * (1.0f - saturation * part);
+        const float rising = value * (1.0f - saturation * (1.0f - part));
+        const float rgb[6][3] = {{value, rising, low},  {falling, value, low}, {low, value, rising},
+                                 {low, falling, value}, {rising, low, value},  {value, low, falling}};
+        for (int channel = 0; channel < 3; ++channel) {
+            color[channel] = static_cast<u8>(std::clamp(rgb[index][channel] * 255.0f + 0.5f, 0.0f, 255.0f));
+        }
+    });
 }
 
 void MgTextureSetDrawVariant(const mgCTexture *source, mgCTexture *variant) {

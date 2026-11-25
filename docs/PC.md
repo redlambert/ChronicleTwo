@@ -728,6 +728,7 @@ Writes are atomic: the file is written as `config.json.tmp` and renamed over `co
 | `audio.master_volume` | number | 1 | 0 to 1 | final mixer gain, independent of the game's fades and core volumes; applies live |
 | `audio.sound` | string | stereo | stereo, surround | output layout; read and saved, not yet applied (the output is stereo) |
 | `audio.soundtrack` | string | ps2 | ps2, custom | `custom` plays recordings from `soundtrack/` beside the save root, as named by its `soundtrack.json` |
+| `audio.swap_sound` | string | off | off, battle:N, system:N | Sound a quick change plays as the new character appears: one of the dungeon's shared battle sounds or the menu and system sounds. The Audio page plays each as it is chosen |
 | `audio.dualsense_speaker` | bool | true | | plays the Ridepod's voice lines, the treasure chests' opening and the menus' sound effects on a DualSense speaker; see "Controller speaker" |
 | `audio.controller_volume` | number | 1 | 0 to 2 | controller speaker gain, applied after `audio.master_volume` |
 | `input.mouse_sensitivity` | number | 0.1 | above 0 | mouse look speed |
@@ -803,7 +804,7 @@ The **PC SETTINGS** entry and the page are drawn at the UI scale, or smaller whe
 | Page | Settings |
 |---|---|
 | Display | Windowed/fullscreen, resolution, FIFO/mailbox/immediate, frame cap, interpolation, auto/4:3 aspect, UI scale, original/sharp text font, FPS counter |
-| Audio | Master volume and PS2/custom soundtrack |
+| Audio | Master volume, PS2/custom soundtrack and the swap landing sound |
 | Controls | Mouse sensitivity, Y inversion and capture; menu pointer speed and acceleration; stick sensitivity and X/Y inversion; button symbols and glyph style |
 | Game | Autosave, quick loadout title, skip intro, auto-use event items, floor monster list, more monsters, transformation stats, transformation EXP, shared badge EXP and debug mode |
 | Keyboard | Keyboard and mouse bindings for pad buttons, movement, look, walking, FPS, developer and mode debug menus, and quick loadout |

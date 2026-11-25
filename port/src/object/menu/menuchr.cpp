@@ -57,6 +57,7 @@
 #include "mg_math.hpp"
 #include "mg_memory.hpp"
 #include "mg_texture.hpp"
+#include "mg_visual.hpp"
 #include "mglib.hpp"
 #include "monster.hpp"
 #include "npccfg.hpp"
@@ -64,6 +65,7 @@
 #include "object/world/town_control.hpp"
 #include "pal_timing.hpp"
 #include "platform/arena.hpp"
+#include "platform/config.hpp"
 #include "platform/game_loop_state.hpp"
 #include "platform/model_assets.hpp"
 #include "prespr.hpp"
@@ -73,6 +75,7 @@
 #include "scenesnd.hpp"
 #include "scriptinterpreter.hpp"
 #include "snd_mngr.hpp"
+#include "texture_color.hpp"
 #include "sound.hpp"
 #include "swordeffect.hpp"
 #include "sysmes.hpp"
@@ -8138,23 +8141,7 @@ int  windup_poll_frame = -1;
 // the press, the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen
 // holds through the pause; the orbs then bloom on the new character. The effect itself plays no sound and never hits.
 char kSwapReleaseMax[] = "\x83\x86\x83\x8A\x83\x58\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
-// The motion whose sound keys carry the charge attack release sound ("ため攻撃").
-char kChargeReleaseMotion[] = "\x82\xBD\x82\xDF\x8D\x55\x8C\x82";
-
-/**
- * One motion sound found on a character's charge attack release.
- */
-struct ReleaseSound {
-    int  se_no = -1;          /**< Sound number in its bank, or -1 when none was found. */
-    bool battle_bank = false; /**< On the scene's shared battle bank, so it plays whoever stands there. */
-};
-
-// Max's charge attack release sound, read from his motion sounds whenever he is the one standing there, and played
-// as the new character appears.
-ReleaseSound max_release_sound;
-
 void StartSwapRelease();
-void RememberMaxReleaseSound();
 
 // Maximum synchronous loading steps before normal menu pacing resumes.
 constexpr int kQuickChangeMaxSteps = 256;
@@ -8486,11 +8473,77 @@ void TintSwapRelease(_EFF_SCRIPT &effect) {
 }
 
 /**
+ * Reports whether the swap's release draws its main swirls in violet; DC2_SWAP_RELEASE_VIOLET=0 keeps them gold.
+ */
+bool SwapVioletEnabled() {
+    static const bool enabled = [] {
+        const char *setting = std::getenv("DC2_SWAP_RELEASE_VIOLET");
+        return setting == nullptr || std::string_view(setting) != "0";
+    }();
+    return enabled;
+}
+
+/**
+ * Returns the violet copy of the release's picture, entering it the first time a floor needs it. The main swirl
+ * band fills the top quarter of c01tame's picture; only that part is recoloured, so the red streaks and the ground
+ * glows, which read lower parts, keep their colours. The copy lives in the picture's own block, so it is freed
+ * with the floor's effects.
+ */
+mgCTexture *SwapVioletTexture(mgCTexture *source) {
+    char name[sizeof(source->name)];
+    std::snprintf(name, sizeof name, "%.28s_sv", source->name);
+    if (mgCTexture *found = mgTexManager.GetTexture(name, source->block); found != nullptr) {
+        return found;
+    }
+    // Turns the band's olive, gold and orange into blue-violet through magenta, as in the preview Alec chose.
+    constexpr MgTextureHueShift kViolet{.hue_turns = 0.68f, .saturation = 1.4f, .top_fraction = 0.25f};
+    return MgTextureCreateHueVariant(source, name, kViolet);
+}
+
+/**
+ * Points one release's own copy of the effect model at the violet picture. The copy has its own material table,
+ * so the charge attack in battle keeps the gold picture.
+ */
+void RecolorSwapRelease(_EFF_SCRIPT &effect) {
+    if (!SwapVioletEnabled() || effect.chara == nullptr || effect.chara->CObjectFrame::frame == nullptr) {
+        return;
+    }
+
+    mgCFrame  *root = effect.chara->CObjectFrame::frame;
+    mgCFrame **frames = root->frame_list;
+    const int  count = frames != nullptr && root->frame_num > 0 ? root->frame_num : 1;
+    int        recolored = 0;
+    for (int i = 0; i < count; ++i) {
+        mgCFrame *frame = frames != nullptr && root->frame_num > 0 ? frames[i] : root;
+        if (frame == nullptr || frame->visual == nullptr) {
+            continue;
+        }
+        mgMaterial *materials = frame->visual->GetpMaterial();
+        const int   material_count = frame->visual->GetMaterialNum();
+        for (int index = 0; materials != nullptr && index < material_count; ++index) {
+            if (materials[index].texture == nullptr) {
+                continue;
+            }
+            if (mgCTexture *violet = SwapVioletTexture(materials[index].texture); violet != nullptr) {
+                materials[index].texture = violet;
+                recolored++;
+            }
+        }
+    }
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        CT_LOG_INFO(Menu, "quick change: charge release violet on {} materials{}", recolored,
+                    recolored == 0 ? " (picture not recoloured, swirls stay gold)" : "");
+    }
+}
+
+/**
  * Starts Max's charge attack release on the player, whoever is changing. Dungeons only; nothing where the effect
  * is not loaded.
  */
 void StartSwapRelease() {
-    RememberMaxReleaseSound();
     if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
         return;
     }
@@ -8499,6 +8552,7 @@ void StartSwapRelease() {
     const int    base = FxScriptMan->SearchBaseNo(kSwapReleaseMax);
     _EFF_SCRIPT *effect = base >= 0 ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
     if (effect != nullptr) {
+        RecolorSwapRelease(*effect);
         TintSwapRelease(*effect);
     }
 
@@ -8511,120 +8565,35 @@ void StartSwapRelease() {
 }
 
 /**
- * The player character standing in the scene now, or null.
+ * The loaded bank of a landing sound set: 1 the scene's battle sounds, 2 the system sounds; -1 where it has none.
  */
-CCharacter2 *PlayerCharacter() {
-    CScene *scene = GetMainScene();
-    if (scene == nullptr) {
-        return nullptr;
+unsigned int SwapSoundBank(int set) {
+    if (set == 1) {
+        CScene *scene = GetMainScene();
+        return scene != nullptr ? static_cast<unsigned int>(scene->se_battle_id) : static_cast<unsigned int>(-1);
     }
-    return scene->GetCharacter(scene->player_chara >= 0 ? scene->player_chara : 0);
+    if (set == 2) {
+        return static_cast<unsigned int>(GetSystemSndID());
+    }
+    return static_cast<unsigned int>(-1);
 }
 
 /**
- * Reads the first sound that a character's charge attack release motion plays, from its motion sound keys.
+ * Plays the landing sound chosen on the Audio page (audio.swap_sound) as the new character appears.
  */
-ReleaseSound FindChargeReleaseSound(CCharacter2 &chara, std::string &found) {
-    ReleaseSound     result;
-    int              set = -1;
-    CHRINFO_KEY_SET *motion = chara.GetKeyListPtr(kChargeReleaseMotion, &set);
-    if (motion == nullptr || set < 0 || set >= CHARA_MOTION_SET_MAX || chara.se_list[set] == nullptr) {
-        return result;
-    }
-
-    const CHRINFO_SE *key = chara.se_list[set];
-    for (int i = 0; i < chara.se_num[set]; ++i, ++key) {
-        if (key->frame < static_cast<float>(motion->start_frame) || key->frame > static_cast<float>(motion->end_frame)) {
-            continue;
-        }
-        const bool own = key->kind == CHRINFO_SE_SOUND || key->kind == CHRINFO_SE_SOUND_FOOT;
-        const bool battle = key->kind == CHRINFO_SE_SOUND_2;
-        if (!own && !battle) {
-            continue;
-        }
-        found += std::format(" {}:{}@{:.0f}", battle ? "battle" : "own", key->se_no, key->frame - motion->start_frame);
-        if (result.se_no < 0) {
-            result.se_no = key->se_no;
-            result.battle_bank = battle;
-        }
-    }
-    return result;
-}
-
-/**
- * Remembers Max's charge attack release sound while he is the one standing there, so a later swap to Monica or the
- * Ridepod can still play it if it is on the shared battle bank.
- */
-void RememberMaxReleaseSound() {
-    if (PortLoopNo != LOOP_DUNGEON || GetUserDataMan()->active_chr_no != USER_CHARA_MAX) {
+void PlaySwapLandingSound() {
+    const Config &config = ConfigGet();
+    if (PortLoopNo != LOOP_DUNGEON || config.swap_sound_set == 0) {
         return;
     }
-    CCharacter2 *chara = PlayerCharacter();
-    if (chara == nullptr) {
-        return;
-    }
-
-    std::string        found;
-    const ReleaseSound sound = FindChargeReleaseSound(*chara, found);
-    if (sound.se_no < 0) {
-        return;
-    }
-    max_release_sound = sound;
+    QuickChangeSoundPlay(config.swap_sound_set, config.swap_sound);
 
     static bool logged = false;
     if (!logged) {
         logged = true;
-        CT_LOG_INFO(Menu, "quick change: Max's charge release sounds (bank:number@frame):{}", found);
-    }
-}
-
-/**
- * Plays the landing sound as the new character appears: Max's charge attack release sound, unless
- * DC2_SWAP_LAND_SOUND says otherwise ("0" for none, or "battle:N" or "system:N" for one sound to try).
- */
-void PlaySwapLandingSound() {
-    if (PortLoopNo != LOOP_DUNGEON) {
-        return;
-    }
-    RememberMaxReleaseSound();
-
-    CScene *scene = GetMainScene();
-    if (scene == nullptr) {
-        return;
-    }
-
-    const char *setting = std::getenv("DC2_SWAP_LAND_SOUND");
-    int         number = -1;
-    if (setting != nullptr && std::string_view(setting) == "0") {
-        return;
-    }
-    if (setting != nullptr && std::sscanf(setting, "battle:%d", &number) == 1) {
-        sndSePlay(scene->se_battle_id, number, 0);
-        return;
-    }
-    if (setting != nullptr && std::sscanf(setting, "system:%d", &number) == 1) {
-        MenuSePlay(number);
-        return;
-    }
-
-    CCharacter2 *chara = PlayerCharacter();
-    const bool   max_here = GetUserDataMan()->active_chr_no == USER_CHARA_MAX;
-    const char  *outcome = "not found on Max's charge attack, so none plays";
-    if (max_release_sound.se_no >= 0 && max_release_sound.battle_bank) {
-        sndSePlay(scene->se_battle_id, max_release_sound.se_no, 0);
-        outcome = "played from the battle bank";
-    } else if (max_release_sound.se_no >= 0 && max_here && chara != nullptr) {
-        sndSePlay(chara->sound_info.se_bank, max_release_sound.se_no, 0);
-        outcome = "played from Max's own bank";
-    } else if (max_release_sound.se_no >= 0) {
-        outcome = "in Max's own bank, which is not loaded for this character, so none plays";
-    }
-
-    static int logged_for = -1;
-    const int  active = GetUserDataMan()->active_chr_no;
-    if (logged_for != active) {
-        logged_for = active;
-        CT_LOG_INFO(Menu, "quick change: landing sound for character {}: {}", active, outcome);
+        CT_LOG_INFO(Menu, "quick change: landing sound {} {} {}", config.swap_sound_set == 1 ? "battle" : "system",
+                    config.swap_sound,
+                    QuickChangeSoundPlayable(config.swap_sound_set, config.swap_sound) ? "plays" : "is not loaded here");
     }
 }
 
@@ -8781,6 +8750,21 @@ void PortStepQuickChangeEffect() {
         fade.SetAnim(kChangeTint[0], kChangeTint[1], kChangeTint[2], 1, kChangeFadeFrames * 2, 0);
         fade.elapsed = kChangeFadeFrames * 2 - change_fade_frames;
         change_fade_frames--;
+    }
+}
+
+int QuickChangeSoundCount(int set) {
+    return sndGetSeCount(SwapSoundBank(set));
+}
+
+bool QuickChangeSoundPlayable(int set, int number) {
+    return sndSeAvailable(SwapSoundBank(set), number);
+}
+
+void QuickChangeSoundPlay(int set, int number) {
+    const unsigned int bank = SwapSoundBank(set);
+    if (sndSeAvailable(bank, number)) {
+        sndSePlay(bank, number, 0);
     }
 }
 

@@ -13,6 +13,7 @@
 #include "menumain.hpp"
 #include "menuop.hpp"
 #include "menusys.hpp"
+#include "object/character/quick_change_presentation.hpp"
 #include "options/rows.hpp"
 #include "options/screen.hpp"
 #include "platform/display.hpp"
@@ -61,7 +62,12 @@ void Change(int direction) {
     Config config = ConfigGet();
     if (StepRow(CurrentRow(), config, direction)) {
         Save(config);
-        MenuSePlay(SYSTEM_SE_CURSOR);
+        // The swap landing sound row plays the sound it lands on instead of the cursor sound.
+        if (CurrentRow().key == "audio.swap_sound" && config.swap_sound_set != 0) {
+            QuickChangeSoundPlay(config.swap_sound_set, config.swap_sound);
+        } else {
+            MenuSePlay(SYSTEM_SE_CURSOR);
+        }
     }
 }
 

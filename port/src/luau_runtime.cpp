@@ -659,6 +659,106 @@ bool HasTagged(const luau_bindings::Signature &signature) {
 
 /**
  *
+ * Native command times inside one script run, kept while the frame trace is on, so a slow run's trace line can
+ * say which commands it spent its time in and how much went to the script's own code.
+ *
+ */
+struct NativeTime {
+    const luau_bindings::Command *command = nullptr; /**< Command, or null for a call by number. */
+    int                           no = 0;            /**< Command number, for a call by number. */
+    double                        ms = 0.0;          /**< Time inside the command. */
+    int                           calls = 0;         /**< Calls made. */
+};
+
+struct RunProfile {
+    std::array<NativeTime, 32> natives{};
+    std::size_t                count = 0;
+    double                     overflow_ms = 0.0; /**< Commands past the table's end. */
+    int                        overflow_calls = 0;
+};
+
+// The innermost script run being profiled, or null. Scripts run on the game thread only.
+RunProfile *run_profile = nullptr;
+
+/**
+ *
+ * Times one native command call into the running script's profile.
+ *
+ */
+class NativeTimer {
+public:
+    NativeTimer(const luau_bindings::Command *command, int no) : profile_(run_profile), command_(command), no_(no) {
+        if (profile_ != nullptr) {
+            start_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    ~NativeTimer() {
+        if (profile_ == nullptr) {
+            return;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count();
+        for (std::size_t index = 0; index < profile_->count; ++index) {
+            NativeTime &entry = profile_->natives[index];
+            if (entry.command == command_ && (command_ != nullptr || entry.no == no_)) {
+                entry.ms += ms;
+                ++entry.calls;
+                return;
+            }
+        }
+        if (profile_->count < profile_->natives.size()) {
+            profile_->natives[profile_->count++] = NativeTime{command_, no_, ms, 1};
+        } else {
+            profile_->overflow_ms += ms;
+            ++profile_->overflow_calls;
+        }
+    }
+
+    NativeTimer(const NativeTimer &) = delete;
+    NativeTimer &operator=(const NativeTimer &) = delete;
+
+private:
+    RunProfile                           *profile_;
+    const luau_bindings::Command         *command_;
+    int                                   no_;
+    std::chrono::steady_clock::time_point start_{};
+};
+
+/**
+ *
+ * Describes where a slow script run spent its time: its costliest native commands, then the script's own code.
+ *
+ */
+std::string RunProfileText(const RunProfile &profile, double total_ms) {
+    std::array<std::size_t, 32> order{};
+    for (std::size_t index = 0; index < profile.count; ++index) {
+        order[index] = index;
+    }
+    std::sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(profile.count), [&](std::size_t left, std::size_t right) {
+        return profile.natives[left].ms > profile.natives[right].ms;
+    });
+    std::string text;
+    double      native_ms = profile.overflow_ms;
+    for (std::size_t index = 0; index < profile.count; ++index) {
+        native_ms += profile.natives[index].ms;
+    }
+    for (std::size_t rank = 0; rank < profile.count && rank < 8; ++rank) {
+        const NativeTime &entry = profile.natives[order[rank]];
+        if (entry.ms < 0.2) {
+            break;
+        }
+        const std::string name = entry.command != nullptr ? CommandLabel(*entry.command) : std::format("command {}", entry.no);
+        text += std::format(" {} {:.1f} x{};", name, entry.ms, entry.calls);
+    }
+    if (profile.overflow_calls > 0) {
+        text += std::format(" other commands {:.1f} x{};", profile.overflow_ms, profile.overflow_calls);
+    }
+    text += std::format(" script code itself {:.1f}", std::max(total_ms - native_ms, 0.0));
+    return text;
+}
+
+/**
+ *
  * Calls a native command with a signature's parameters, typed for a variant, returning its outputs to the script.
  *
  */
@@ -799,6 +899,7 @@ Variant UpvalueVariant(lua_State *lua, int index) {
 int CallSignature(lua_State *lua) {
     const auto &command = *static_cast<const luau_bindings::Command *>(lua_tolightuserdata(lua, lua_upvalueindex(1)));
     const auto &signature = *static_cast<const luau_bindings::Signature *>(lua_tolightuserdata(lua, lua_upvalueindex(2)));
+    const NativeTimer timer(&command, command.no);
     return CallTyped(lua, command, signature, UpvalueVariant(lua, 3));
 }
 
@@ -809,6 +910,7 @@ int CallSignature(lua_State *lua) {
  */
 int CallCommand(lua_State *lua) {
     const auto                     &command = *static_cast<const luau_bindings::Command *>(lua_tolightuserdata(lua, lua_upvalueindex(1)));
+    const NativeTimer               timer(&command, command.no);
     const Variant                   variant = UpvalueVariant(lua, 2);
     const auto                      count = static_cast<std::size_t>(lua_gettop(lua));
     const luau_bindings::Signature *chosen = nullptr;
@@ -856,7 +958,8 @@ int CallExt(lua_State *lua) {
     if (!std::isfinite(number) || number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max() || std::trunc(number) != number) {
         luaL_error(lua, "native command number is outside its integer range");
     }
-    const int no = static_cast<int>(number);
+    const int         no = static_cast<int>(number);
+    const NativeTimer timer(nullptr, no);
     return CallGeneric(lua, no, 2, nullptr);
 }
 
@@ -1568,7 +1671,25 @@ void Step(CRunScript *script, Instance &instance, lua_State *co, int nargs) {
     // A copy of the module name, since the instance can be released while it runs. Only made while the trace is on.
     const std::string            trace_label = frame_trace::Enabled() ? instance.module : std::string();
     const frame_trace::SlowScope slow('S', trace_label, 1.5);
+    // While the trace is on, a run over kProfiledRunMs also gets a C line saying which native commands it spent its
+    // time in. The profile is the innermost run's, so a script started from inside a command times into its own.
+    constexpr double kProfiledRunMs = 8.0;
+    RunProfile       profile;
+    RunProfile      *outer_profile = run_profile;
+    const int        running_no = instance.running_no; // the instance can be released while it runs
+    const auto       run_start = std::chrono::steady_clock::now();
+    if (frame_trace::Enabled()) {
+        run_profile = &profile;
+    }
     const int status = lua_resume(co, nullptr, nargs);
+    run_profile = outer_profile;
+    if (frame_trace::Enabled()) {
+        const double run_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - run_start).count();
+        if (run_ms >= kProfiledRunMs) {
+            frame_trace::Slow('C', std::format("{} program {}:{}", trace_label, running_no, RunProfileText(profile, run_ms)),
+                              run_ms);
+        }
+    }
     if (!dc2::script::ExecutionValid(script)) {
         instance.broken = true;
         ReleaseRef(instance.thread_ref);

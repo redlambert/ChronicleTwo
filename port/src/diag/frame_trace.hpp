@@ -27,6 +27,24 @@ namespace frame_trace {
 
 bool Enabled();
 
+/**
+ * What the trace itself cost since the last TakeSelfCost: time spent turning records into lines (on the game thread
+ * and on others), the writer thread's time draining them to the card, and how much it wrote.
+ */
+struct SelfCost {
+    double        game_ms = 0.0;   // line building on the game thread
+    double        other_ms = 0.0;  // line building on other threads (the render thread's P lines, workers' L lines)
+    double        writer_ms = 0.0; // the writer thread: screen records, file writes and flushes
+    std::uint64_t lines = 0;
+    std::uint64_t bytes = 0;
+};
+
+// Returns the trace's cost since the last call and starts counting again. Any thread.
+SelfCost TakeSelfCost();
+
+// Line building time on the game thread so far, in ms, for subtracting the trace from a timed section that writes it.
+double GameCostMs();
+
 struct PresentRecord {
     char          kind = '?';
     std::uint64_t serial = 0;
@@ -60,7 +78,8 @@ void Note(std::string_view text);
 void LongFrame(std::string_view area, double frame_ms, std::string_view game_zones, std::string_view other_zones);
 
 // A slow single operation, with what it worked on. kind: T texture document, M model build, A archive read,
-// F game file load, V villager step, U town update part, S one script run (module name), X other.
+// F game file load, V villager step, U town update part, S one script run (module name), C a script run of 8 ms or
+// more broken down by native command ("name ms xcalls;" pairs, then the script's own code), X other.
 void Slow(char kind, std::string_view what, double ms);
 
 // Times a scope and writes a Slow line when it runs at least min_ms. Cheap when the trace is off.

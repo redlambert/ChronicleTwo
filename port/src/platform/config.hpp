@@ -92,6 +92,10 @@ struct Config : HostSettings {
     bool         transformation_stats = false; /**< Applies faster badge attack growth and Monica's defence when higher. */
     bool         transformation_exp = false;   /**< Doubles absorption earned by the active transformation badge. */
     bool         shared_badge_exp = false;     /**< Shares a quarter of Monica's absorption with other unlocked badges. */
+    // audio.swap_sound: the sound a quick change plays as the new character appears: "off", "battle:N" (the dungeon's
+    // shared battle sounds) or "system:N" (the menu and system sounds).
+    int          swap_sound_set = 0; /**< 0 none, 1 battle sounds, 2 system sounds. */
+    int          swap_sound = 0;     /**< Sound number within the set. */
     ConfigAspect aspect = ConfigAspect::Auto;
     float        ui_scale = 1.0f;
     bool         font_sharp = true;

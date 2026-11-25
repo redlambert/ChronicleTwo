@@ -967,6 +967,15 @@ static int GetPortBankNo(unsigned int snd_id, int *port, int *bank) {
     return 1;
 }
 
+int sndGetSeCount(unsigned int snd_id) {
+    if (snd_id == (unsigned int) -1) {
+        return 0;
+    }
+    sndPortInfo *info = GetPortInfo(static_cast<int>(GetPortNo(snd_id)));
+    sndBankInfo *bank = info != nullptr ? info->GetBank(static_cast<int>(GetBankNo(snd_id))) : nullptr;
+    return bank != nullptr ? std::max(bank->se_num, 0) : 0;
+}
+
 void sndSePlay(u32 snd_id, s32 se_no, s32 voice) {
     sndSePlaySeID(snd_id, se_no, -1, -1, 0x40, 0x2000, voice);
 }

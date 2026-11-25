@@ -21,6 +21,18 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+long long NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+}
+
+// The trace's own cost, in nanoseconds and bytes, since the last TakeSelfCost (game_total_ns never resets).
+std::atomic<std::uint64_t> game_ns{0};
+std::atomic<std::uint64_t> game_total_ns{0};
+std::atomic<std::uint64_t> other_ns{0};
+std::atomic<std::uint64_t> writer_ns{0};
+std::atomic<std::uint64_t> line_count{0};
+std::atomic<std::uint64_t> byte_count{0};
+
 /**
  * Buffers lines from any thread; a writer thread drains them with the screen's shown images once a second, so no
  * game or render frame waits on the card.
@@ -71,6 +83,8 @@ public:
     }
 
     void Add(std::string line) {
+        line_count.fetch_add(1, std::memory_order_relaxed);
+        byte_count.fetch_add(line.size(), std::memory_order_relaxed);
         const std::scoped_lock lock(mutex_);
         if (pending_.size() < (1u << 22)) {
             pending_ += line;
@@ -87,6 +101,7 @@ private:
             lines.swap(pending_);
             const bool stopping = stop_;
             lock.unlock();
+            const long long drain_start = NowNs();
             gfx::TakeShownScreenFrames(shown);
             for (const auto &frame : shown) {
                 lines += std::format("S,{},{},{}\n", frame.id, frame.queued_ns, frame.shown_ns);
@@ -97,6 +112,7 @@ private:
                 std::fflush(file_);
                 lines.clear();
             }
+            writer_ns.fetch_add(static_cast<std::uint64_t>(NowNs() - drain_start), std::memory_order_relaxed);
             if (stopping) {
                 return;
             }
@@ -122,7 +138,43 @@ Writer &TheWriter() {
     return writer;
 }
 
+/**
+ * Adds the time from its creation to its end to the trace's own cost, on the game thread's count or the others'.
+ */
+class CostScope {
+public:
+    CostScope() : start_(NowNs()) {}
+    ~CostScope() {
+        const auto spent = static_cast<std::uint64_t>(NowNs() - start_);
+        if (std::this_thread::get_id() == game_thread.load(std::memory_order_relaxed)) {
+            game_ns.fetch_add(spent, std::memory_order_relaxed);
+            game_total_ns.fetch_add(spent, std::memory_order_relaxed);
+        } else {
+            other_ns.fetch_add(spent, std::memory_order_relaxed);
+        }
+    }
+    CostScope(const CostScope &) = delete;
+    CostScope &operator=(const CostScope &) = delete;
+
+private:
+    long long start_;
+};
+
 } // namespace
+
+SelfCost TakeSelfCost() {
+    SelfCost cost;
+    cost.game_ms = static_cast<double>(game_ns.exchange(0, std::memory_order_relaxed)) / 1.0e6;
+    cost.other_ms = static_cast<double>(other_ns.exchange(0, std::memory_order_relaxed)) / 1.0e6;
+    cost.writer_ms = static_cast<double>(writer_ns.exchange(0, std::memory_order_relaxed)) / 1.0e6;
+    cost.lines = line_count.exchange(0, std::memory_order_relaxed);
+    cost.bytes = byte_count.exchange(0, std::memory_order_relaxed);
+    return cost;
+}
+
+double GameCostMs() {
+    return static_cast<double>(game_total_ns.load(std::memory_order_relaxed)) / 1.0e6;
+}
 
 bool Enabled() {
     return TheWriter().Enabled();
@@ -133,6 +185,7 @@ void Present(const PresentRecord &record) {
     if (!writer.Enabled()) {
         return;
     }
+    const CostScope cost;
     const gfx::RecentGpuWork work = gfx::GetRecentGpuWork();
     writer.Add(std::format("P,{},{},{},{:.3f},{},{},{},{:.2f},{:.2f},{},{:.2f}\n", writer.Microseconds(), record.kind,
                            record.serial, record.alpha, record.previous_ok ? 1 : 0, gfx::LastQueuedScreenFrame(),
@@ -147,6 +200,7 @@ void Game(const GameRecord &record) {
     if (game_thread.load(std::memory_order_relaxed) == std::thread::id{}) {
         game_thread.store(std::this_thread::get_id(), std::memory_order_relaxed);
     }
+    const CostScope cost;
     writer.Add(std::format("G,{},{},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{},{},{}\n", writer.Microseconds(), record.area,
                            record.frame_ms, record.logic_ms, record.lease_ms, record.locked_ms, record.wait_ms,
                            record.ticks, record.frames, record.draws));
@@ -157,6 +211,7 @@ void Note(std::string_view text) {
     if (!writer.Enabled()) {
         return;
     }
+    const CostScope cost;
     writer.Add(std::format("N,{},{}\n", writer.Microseconds(), text));
 }
 
@@ -165,6 +220,7 @@ void LongFrame(std::string_view area, double frame_ms, std::string_view game_zon
     if (!writer.Enabled()) {
         return;
     }
+    const CostScope cost;
     std::string game(game_zones);
     std::string other(other_zones);
     std::ranges::replace(game, ',', ';');
@@ -177,20 +233,13 @@ void Slow(char kind, std::string_view what, double ms) {
     if (!writer.Enabled()) {
         return;
     }
+    const CostScope cost;
     std::string text(what);
     std::ranges::replace(text, ',', ';');
     std::ranges::replace(text, '\n', ' ');
     const char thread = std::this_thread::get_id() == game_thread.load(std::memory_order_relaxed) ? 'g' : 'w';
     writer.Add(std::format("L,{},{},{},{:.2f},{}\n", writer.Microseconds(), kind, thread, ms, text));
 }
-
-namespace {
-
-long long NowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
-}
-
-} // namespace
 
 SlowScope::SlowScope(char kind, std::string_view what, double min_ms) : kind_(kind), what_(what), min_ms_(min_ms) {
     if (Enabled()) {

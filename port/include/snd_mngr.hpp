@@ -849,6 +849,13 @@ int sndGetSeStatus(unsigned int snd_id, int se_no);
 
 /**
  *
+ * Port addition for the swap sound browser: the number of sound effect slots in a loaded bank, or 0.
+ *
+ */
+int sndGetSeCount(unsigned int snd_id);
+
+/**
+ *
  * Pauses a port's driver sequence, if it is playing.
  *
  * @mangled sndPortSqPause__Fi

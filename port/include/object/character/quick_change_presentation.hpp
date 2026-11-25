@@ -37,3 +37,17 @@ int PortQuickChangeWindUp(int request, bool eligible);
  * Completes a quick change the frame just opened, in that same frame, so the game never stops for its menu.
  */
 void PortFinishQuickChange();
+
+/**
+ * The landing sound sets for the Audio page's swap sound option: 1 the dungeon's shared battle sounds, 2 the menu and
+ * system sounds. How many sounds a set holds where it is loaded now (0 where it is not loaded).
+ */
+int QuickChangeSoundCount(int set);
+/**
+ * Whether one sound of a landing sound set is loaded and playable.
+ */
+bool QuickChangeSoundPlayable(int set, int number);
+/**
+ * Plays one sound of a landing sound set, as the option's preview or as the swap's landing sound.
+ */
+void QuickChangeSoundPlay(int set, int number);

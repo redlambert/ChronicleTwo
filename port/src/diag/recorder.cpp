@@ -157,6 +157,8 @@ struct WindowStats {
     uint64_t          flare_off_frames = 0;       // game frames that would have drawn the flare with it switched off
     std::array<double, gfx::profile::kMaxSites> other{}; // render-thread time per timing point
     PartTotals        parts{};                    // draw parts (CT_DRAW_PART) over the window's play frames
+    double            watch_ms = 0.0;             // the frame watch's own time on the game thread, trace lines apart
+    uint64_t          watch_calls = 0;            // frame watch runs (one per game frame)
 };
 
 constexpr std::size_t kWorstFrames = 6;
@@ -458,6 +460,21 @@ void LogWindow(Clock::time_point now) {
                     g_area.name, g_screen_wait_overlap ? "on" : "off", overlap - g_window_overlap_start,
                     g_window.frames, overlap, (resume - g_window_resume_start) / frames,
                     static_cast<double>(immediate - g_window_immediate_start) / frames);
+    }
+    // What the diagnostics cost: the frame watch's bookkeeping and the frame trace's lines on the game thread, which
+    // both come out of the game's frame, and the trace's work on other threads.
+    const frame_trace::SelfCost trace_cost = frame_trace::TakeSelfCost();
+    if (g_window.frames >= 30 && g_window.watch_calls > 0) {
+        const double calls = static_cast<double>(g_window.watch_calls);
+        const double seconds = std::max(Ms(now - g_window.start) / 1000.0, 0.001);
+        const double watch = g_window.watch_ms / calls;
+        const double trace = trace_cost.game_ms / calls;
+        CT_LOG_INFO(Main,
+                    "diag window self-cost '{}': diagnostics on the game thread {:.2f} ms per game frame (frame watch "
+                    "{:.2f}, frame trace lines {:.2f}); trace lines on other threads {:.2f} ms per game frame; trace "
+                    "writer thread {:.1f} ms per second; {:.0f} trace lines and {:.1f} KB per second",
+                    g_area.name, watch + trace, watch, trace, trace_cost.other_ms / calls, trace_cost.writer_ms / seconds,
+                    static_cast<double>(trace_cost.lines) / seconds, static_cast<double>(trace_cost.bytes) / 1024.0 / seconds);
     }
     g_window_immediate_start = immediate;
     g_window_overlap_start = overlap;
@@ -785,12 +802,33 @@ DrawPart::~DrawPart() {
     }
 }
 
+/**
+ * Adds one frame watch run's time to the window's self-cost, less the frame trace lines it wrote, which the trace
+ * counts itself.
+ */
+class WatchCost {
+public:
+    WatchCost() : start_(Clock::now()), trace_start_ms_(frame_trace::GameCostMs()) {}
+    ~WatchCost() {
+        const double trace_ms = frame_trace::GameCostMs() - trace_start_ms_;
+        g_window.watch_ms += std::max(Ms(Clock::now() - start_) - trace_ms, 0.0);
+        ++g_window.watch_calls;
+    }
+    WatchCost(const WatchCost &) = delete;
+    WatchCost &operator=(const WatchCost &) = delete;
+
+private:
+    Clock::time_point start_;
+    double            trace_start_ms_;
+};
+
 void Tick(int loop_no, std::string_view area, bool mark_held) {
     if (!WatchWanted()) {
         // The Display settings this follows (sun flare, screen wait overlap) still apply without the frame watch.
         FollowFlareSetting(area);
         return;
     }
+    const WatchCost watch_cost;
     const Clock::time_point now = Clock::now();
     if (!g_started) {
         StartWatch(now);

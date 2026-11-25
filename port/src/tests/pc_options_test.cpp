@@ -36,6 +36,7 @@ TEST(PcOptions, RequestedSettingsHaveUniqueRowsAndRoundTripTheirEdits) {
         "video.show_fps",
         "audio.master_volume",
         "audio.soundtrack",
+        "audio.swap_sound",
         "audio.dualsense_speaker",
         "audio.controller_volume",
         "input.mouse_sensitivity",

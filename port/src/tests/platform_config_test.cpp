@@ -138,6 +138,20 @@ TEST_F(PlatformConfig, FullFileRoundTrips) {
     ASSERT_TRUE(SettingsGet() == expected);
 }
 
+TEST_F(PlatformConfig, SwapSoundIsOffByDefaultAndRoundTrips) {
+    EXPECT_EQ(ConfigParse("").swap_sound_set, 0);
+    const Config battle = ConfigParse(R"({"audio":{"swap_sound":"battle:12"}})");
+    EXPECT_EQ(battle.swap_sound_set, 1);
+    EXPECT_EQ(battle.swap_sound, 12);
+    EXPECT_EQ(ConfigParse(ConfigSerialize(battle)), battle);
+    const Config system = ConfigParse(R"({"audio":{"swap_sound":"System:3"}})");
+    EXPECT_EQ(system.swap_sound_set, 2);
+    EXPECT_EQ(system.swap_sound, 3);
+    for (const char *value : {"null", "12", "\"loud\"", "\"battle:\"", "\"battle:-1\"", "\"battle:99999\""}) {
+        EXPECT_EQ(ConfigParse(std::string("{\"audio\":{\"swap_sound\":") + value + "}}").swap_sound_set, 0) << value;
+    }
+}
+
 TEST_F(PlatformConfig, TextFontIsSharpByDefaultAndRoundTrips) {
     EXPECT_TRUE(ConfigParse("").font_sharp);
     const Config original = ConfigParse(R"({"video":{"text_font":"original"}})");

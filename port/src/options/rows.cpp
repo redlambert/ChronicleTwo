@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "object/character/quick_change_presentation.hpp"
 #include "platform/input.hpp"
 
 namespace options {
@@ -100,6 +101,72 @@ Row Resolution() {
         auto       next = sizes[(index + direction + sizes.size()) % sizes.size()];
         c.window_width = next.width;
         c.window_height = next.height;
+    };
+    return row;
+}
+
+// How many numbers a landing sound set steps through where it is not loaded (battle sounds outside a dungeon).
+constexpr int kUnloadedSoundSet = 256;
+
+int SoundSetSize(int set) {
+    const int count = QuickChangeSoundCount(set);
+    return count > 0 ? count : kUnloadedSoundSet;
+}
+
+// A loaded set steps over its empty numbers; an unloaded one steps through every number.
+bool SoundUsable(int set, int number) {
+    return QuickChangeSoundCount(set) <= 0 || QuickChangeSoundPlayable(set, number);
+}
+
+// Off, then the battle sounds, then the system sounds, and round to Off.
+Row SwapSound() {
+    Row row{.key = "audio.swap_sound", .label = "Swap landing sound", .help = "Plays as the new character appears after a swap.\nLeft/Right plays each. Battle sounds play in dungeons."};
+    row.value = [](const Config &c) {
+        if (c.swap_sound_set == 1) {
+            return std::format("Battle {}", c.swap_sound);
+        }
+        if (c.swap_sound_set == 2) {
+            return std::format("System {}", c.swap_sound);
+        }
+        return std::string("Off");
+    };
+    row.step = [](Config &c, int direction) {
+        int set = c.swap_sound_set;
+        int number = c.swap_sound;
+        for (int tried = 0; tried < 2 * (kUnloadedSoundSet + 4096); ++tried) {
+            if (direction > 0) {
+                if (set == 0) {
+                    set = 1;
+                    number = 0;
+                } else if (number + 1 < SoundSetSize(set)) {
+                    ++number;
+                } else if (set == 1) {
+                    set = 2;
+                    number = 0;
+                } else {
+                    set = 0;
+                    number = 0;
+                }
+            } else {
+                if (set == 0) {
+                    set = 2;
+                    number = SoundSetSize(2) - 1;
+                } else if (number > 0) {
+                    number = std::min(number - 1, SoundSetSize(set) - 1);
+                } else if (set == 2) {
+                    set = 1;
+                    number = SoundSetSize(1) - 1;
+                } else {
+                    set = 0;
+                    number = 0;
+                }
+            }
+            if (set == 0 || SoundUsable(set, number)) {
+                break;
+            }
+        }
+        c.swap_sound_set = set;
+        c.swap_sound = number;
     };
     return row;
 }
@@ -346,6 +413,7 @@ std::vector<Page> MakePages() {
         {.name = "Audio",    .rows = {
                               Number<&Config::master_volume>("audio.master_volume", "Master volume", "Adjusts all sound, including music and movies.", {0, .05, .1, .15, .2, .25, .3, .35, .4, .45, .5, .55, .6, .65, .7, .75, .8, .85, .9, .95, 1}, 100, "%"),
                               Choice<&Config::soundtrack>("audio.soundtrack", "Soundtrack", "Applies when the next song starts; no restart needed.\nCustom needs soundtrack/soundtrack.json recordings.", {"PS2", "Custom"}),
+                              SwapSound(),
                               Choice<&Config::dualsense_speaker>("audio.dualsense_speaker", "DualSense Speaker", "Plays sound effects on a DualSense controller speaker.\nTurn off if you want to keep vanilla experience", {"Off", "On"}),
                               Number<&Config::controller_volume>("audio.controller_volume", "Controller volume", "DualSense speaker volume, after master volume.", {0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1, 1.25, 1.5, 1.75, 2}, 100, "%"),
                           }      },
