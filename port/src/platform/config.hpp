@@ -97,10 +97,11 @@ struct Config : HostSettings {
     // Per kind of quick change (SwapGroup: into Max or Monica, into the Ridepod, into the monster form), the effect it
     // plays around the character (game.swap_<group>_effect, a kSwapEffects key) and the sound it plays as the new
     // character appears (game.swap_<group>_sound: "off", "battle:N" for the dungeon's shared battle sounds,
-    // "system:N" for the menu and system sounds or "character:N" for the new character's own sounds). The human
-    // swap defaults to Max's charge release and battle sound 73.
-    std::array<int, SWAP_GROUP_COUNT> swap_effect = {kSwapEffectMaxRelease, kSwapEffectRidepodFlash,
-                                                     kSwapEffectMonicaMagic}; /**< kSwapEffects index. */
+    // "system:N" for the menu and system sounds or "character:N" for the new character's own sounds). Every kind
+    // of swap defaults to Max's charge release, each with its own datapack picture; the human swap's sound defaults
+    // to battle sound 73.
+    std::array<int, SWAP_GROUP_COUNT> swap_effect = {kSwapEffectMaxRelease, kSwapEffectMaxRelease,
+                                                     kSwapEffectMaxRelease}; /**< kSwapEffects index. */
     std::array<int, SWAP_GROUP_COUNT> swap_sound_set = {1, 0, 0};             /**< 0 none, 1 battle, 2 system, 3 character sounds. */
     std::array<int, SWAP_GROUP_COUNT> swap_sound = {73, 0, 0};                /**< Sound number within the set. */
     ConfigAspect aspect = ConfigAspect::Auto;

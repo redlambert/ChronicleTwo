@@ -8530,12 +8530,21 @@ bool SwapVioletEnabled() {
     return enabled;
 }
 
-// Alec's own recolour of c01tame's picture for the swap (violet swirls, blue streaks, a green orb and a gold
-// starburst), read from a datapack because it is made from the game's art and stays out of the repository.
+// Alec's own pictures for the swap's copy of c01tame, read from a datapack because they are made from the game's
+// art and stay out of the repository: one per kind of swap (SwapGroup order), and a shared one any kind without
+// its own picture falls back to.
+constexpr std::array<const char *, SWAP_GROUP_COUNT> kSwapGroupPicturePaths = {
+    "textures/dungeon/eff_script/c01tame_swap_human.png",
+    "textures/dungeon/eff_script/c01tame_swap_ridepod.png",
+    "textures/dungeon/eff_script/c01tame_swap_monster.png",
+};
 constexpr const char *kSwapPicturePath = "textures/dungeon/eff_script/c01tame_swap.png";
 
+// Letters that tell the kinds of swap's picture copies apart in the texture manager (SwapGroup order).
+constexpr std::array<char, SWAP_GROUP_COUNT> kSwapGroupLetters = {'h', 'r', 'm'};
+
 /**
- * The datapack's swap picture, read and decoded the first time a swap needs it; empty when no active pack has it.
+ * A datapack swap picture, read and decoded the first time a swap needs it; empty when no active pack has it.
  */
 struct SwapPicture {
     std::vector<uint8_t> rgba;
@@ -8543,41 +8552,55 @@ struct SwapPicture {
     uint32_t             height = 0;
 };
 
-const SwapPicture &SwapPackPicture() {
-    static const SwapPicture picture = [] {
-        SwapPicture result;
-        const auto  file = datapacks::Resolve(kSwapPicturePath);
-        if (!file) {
-            CT_LOG_INFO(Menu, "quick change: no datapack holds {}, so the swirls use the built-in violet", kSwapPicturePath);
-            return result;
-        }
-        std::vector<uint8_t> bytes;
-        std::string          error;
-        if (!vfs::Read(*file, bytes, 16ull * 1024 * 1024)
-            || !datapacks::DecodePng(bytes, result.width, result.height, result.rgba, error)) {
-            CT_LOG_WARN(Menu, "quick change: {} could not be read ({}), so the swirls use the built-in violet",
-                        kSwapPicturePath, error);
-            return SwapPicture{};
-        }
-        CT_LOG_INFO(Menu, "quick change: swap picture {} ({}x{}) from a datapack", kSwapPicturePath, result.width,
-                    result.height);
+SwapPicture ReadSwapPicture(const char *path) {
+    SwapPicture result;
+    const auto  file = datapacks::Resolve(path);
+    if (!file) {
+        CT_LOG_INFO(Menu, "quick change: no datapack holds {}", path);
         return result;
-    }();
-    return picture;
+    }
+    std::vector<uint8_t> bytes;
+    std::string          error;
+    if (!vfs::Read(*file, bytes, 16ull * 1024 * 1024)
+        || !datapacks::DecodePng(bytes, result.width, result.height, result.rgba, error)) {
+        CT_LOG_WARN(Menu, "quick change: {} could not be read ({})", path, error);
+        return SwapPicture{};
+    }
+    CT_LOG_INFO(Menu, "quick change: swap picture {} ({}x{}) from a datapack", path, result.width, result.height);
+    return result;
 }
 
 /**
- * Returns the swap's copy of the release's picture, entering it the first time a floor needs it: the datapack's
- * picture when an active pack holds one, else a built-in violet that recolours only the main swirl band (the top
- * quarter of c01tame's picture). The copy lives in the picture's own block, so it is freed with the floor's effects.
+ * The picture for one kind of swap: its own when a datapack holds one, else the shared c01tame_swap.png, else
+ * empty (the built-in violet).
  */
-mgCTexture *SwapVioletTexture(mgCTexture *source) {
-    char name[sizeof(source->name)];
-    std::snprintf(name, sizeof name, "%.28s_sv", source->name);
+const SwapPicture &SwapPackPicture(int group) {
+    static const SwapPicture shared = ReadSwapPicture(kSwapPicturePath);
+    static const std::array<SwapPicture, SWAP_GROUP_COUNT> own = [] {
+        std::array<SwapPicture, SWAP_GROUP_COUNT> result;
+        for (int index = 0; index < SWAP_GROUP_COUNT; ++index) {
+            result[index] = ReadSwapPicture(kSwapGroupPicturePaths[index]);
+        }
+        return result;
+    }();
+    const SwapPicture &picture = own[std::clamp(group, 0, SWAP_GROUP_COUNT - 1)];
+    return picture.rgba.empty() ? shared : picture;
+}
+
+/**
+ * Returns one kind of swap's copy of the release's picture, entering it the first time a floor needs it: that
+ * kind's datapack picture, else the shared one, else a built-in violet that recolours only the main swirl band (the
+ * top quarter of c01tame's picture). The copy lives in the picture's own block, so it is freed with the floor's
+ * effects and takes no texture block of its own.
+ */
+mgCTexture *SwapVioletTexture(mgCTexture *source, int group) {
+    const int group_index = std::clamp(group, 0, SWAP_GROUP_COUNT - 1);
+    char      name[sizeof(source->name)];
+    std::snprintf(name, sizeof name, "%.27s_sv%c", source->name, kSwapGroupLetters[group_index]);
     if (mgCTexture *found = mgTexManager.GetTexture(name, source->block); found != nullptr) {
         return found;
     }
-    const SwapPicture &picture = SwapPackPicture();
+    const SwapPicture &picture = SwapPackPicture(group_index);
     if (!picture.rgba.empty()) {
         if (mgCTexture *made = MgTextureCreateImageVariant(source, name, picture.rgba, picture.width, picture.height)) {
             return made;
@@ -8589,10 +8612,10 @@ mgCTexture *SwapVioletTexture(mgCTexture *source) {
 }
 
 /**
- * Points one release's own copy of the effect model at the violet picture. The copy has its own material table,
- * so the charge attack in battle keeps the gold picture.
+ * Points one release's own copy of the effect model at the picture for this kind of swap. The copy has its own
+ * material table, so the charge attack in battle keeps the gold picture.
  */
-void RecolorSwapRelease(_EFF_SCRIPT &effect) {
+void RecolorSwapRelease(_EFF_SCRIPT &effect, int group) {
     if (!SwapVioletEnabled() || effect.chara == nullptr || effect.chara->CObjectFrame::frame == nullptr) {
         return;
     }
@@ -8612,18 +8635,22 @@ void RecolorSwapRelease(_EFF_SCRIPT &effect) {
             if (materials[index].texture == nullptr) {
                 continue;
             }
-            if (mgCTexture *violet = SwapVioletTexture(materials[index].texture); violet != nullptr) {
+            if (mgCTexture *violet = SwapVioletTexture(materials[index].texture, group); violet != nullptr) {
                 materials[index].texture = violet;
                 recolored++;
             }
         }
     }
 
-    static bool logged = false;
-    if (!logged) {
-        logged = true;
-        CT_LOG_INFO(Menu, "quick change: charge release recoloured on {} materials{}", recolored,
-                    recolored == 0 ? " (picture not recoloured, the effect keeps the game's colours)" : "");
+    static std::array<bool, SWAP_GROUP_COUNT> logged{};
+    const int                                 group_index = std::clamp(group, 0, SWAP_GROUP_COUNT - 1);
+    if (!logged[group_index]) {
+        logged[group_index] = true;
+        CT_LOG_INFO(Menu, "quick change: {} swap's charge release recoloured on {} materials{}",
+                    group_index == SWAP_GROUP_RIDEPOD   ? "Ridepod"
+                    : group_index == SWAP_GROUP_MONSTER ? "monster"
+                                                        : "human",
+                    recolored, recolored == 0 ? " (picture not recoloured, the effect keeps the game's colours)" : "");
     }
 }
 
@@ -8683,7 +8710,7 @@ void StartSwapEffect(bool at_press) {
         swap_effect = effect;
         swap_effect_ticks = kSwapEffectTicks;
         if (choice == kSwapEffectMaxRelease) {
-            RecolorSwapRelease(*effect);
+            RecolorSwapRelease(*effect, swap_group);
             TintSwapRelease(*effect);
         }
     }

@@ -144,8 +144,8 @@ TEST_F(PlatformConfig, SwapSettingsHaveDefaultsAndRoundTrip) {
     EXPECT_EQ(defaults.swap_sound[SWAP_GROUP_HUMAN], 73);
     EXPECT_EQ(ConfigParse(R"({"game":{"swap_monster_sound":"character:4"}})").swap_sound_set[SWAP_GROUP_MONSTER], 3);
     EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_HUMAN], kSwapEffectMaxRelease);
-    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_RIDEPOD], kSwapEffectRidepodFlash);
-    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_MONSTER], kSwapEffectMonicaMagic);
+    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_RIDEPOD], kSwapEffectMaxRelease);
+    EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_MONSTER], kSwapEffectMaxRelease);
 
     const Config chosen = ConfigParse(
         R"({"game":{"swap_ridepod_sound":"battle:12","swap_monster_sound":"System:3","swap_monster_effect":"dust"}})");
