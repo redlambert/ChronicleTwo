@@ -8962,6 +8962,10 @@ void QuickChangeLoadSwapEffects(unsigned int *eff_pack) {
     if (FxScriptMan == nullptr || !SwapReleaseEnabled()) {
         return;
     }
+    // Mid-floor (no pack: the options just closed), effects from the dungeon's own set are already in or never will
+    // be, and a load keeps texture blocks free for monsters' effects.
+    constexpr int kMidFloorFreeBlocks = 4;
+    const bool    mid_floor = eff_pack == nullptr;
     constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kGroupNames = {"human", "Ridepod", "monster"};
     for (int group = 0; group < SWAP_GROUP_COUNT; ++group) {
         const int choice = std::clamp(ConfigGet().swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
@@ -8971,6 +8975,14 @@ void QuickChangeLoadSwapEffects(unsigned int *eff_pack) {
         }
         const SwapEffectChoice &effect = kSwapEffects[choice];
         const EFF_SPT_BASE_DEF &definition = eff_spt_base_def[row];
+        if (mid_floor && effect.in_pack) {
+            continue;
+        }
+        if (mid_floor && FxScriptMan->texb_used + kMidFloorFreeBlocks > FxScriptMan->texb_num) {
+            CT_LOG_INFO(Menu, "quick change: {} swap effect {} waits for the next floor (effect texture blocks {} of {} in use)",
+                        kGroupNames[group], effect.label, FxScriptMan->texb_used, FxScriptMan->texb_num);
+            continue;
+        }
         // A model effect whose model is missing would run with no model, so it is left out.
         const bool model_missing = !effect.in_pack && definition.type == EFF_SPT_BASE_CHR &&
                                    datapacks::Candidates("dungeon/eff_script/" + std::string(definition.file) + ".gltf").empty();
@@ -8988,10 +9000,16 @@ void QuickChangeLoadSwapEffects(unsigned int *eff_pack) {
                 }
             }
         }
-        CT_LOG_INFO(Menu, "quick change: {} swap effect {} {} with the floor (effect texture blocks {} of {} in use)",
+        CT_LOG_INFO(Menu, "quick change: {} swap effect {} {} {} (effect texture blocks {} of {} in use)",
                     kGroupNames[group], effect.label,
                     result > 0 ? "loaded" : model_missing ? "has no model file, not loaded" : "could not be loaded",
-                    FxScriptMan->texb_used, FxScriptMan->texb_num);
+                    mid_floor ? "as the options closed" : "with the floor", FxScriptMan->texb_used, FxScriptMan->texb_num);
+    }
+}
+
+void QuickChangeLoadPickedSwapEffects() {
+    if (PortLoopNo == LOOP_DUNGEON) {
+        QuickChangeLoadSwapEffects(nullptr);
     }
 }
 

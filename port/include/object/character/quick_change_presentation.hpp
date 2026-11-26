@@ -56,9 +56,15 @@ void QuickChangeSoundPreview(int set, int group, int number);
 
 /**
  * Loads the effects the swap rows picked that the dungeon's own set leaves out, while the floor loads, from the
- * dungeon's effect pack (eff_pack) or dungeon/eff_script.
+ * dungeon's effect pack (eff_pack) or dungeon/eff_script; with no pack (mid-floor), only dungeon/eff_script.
  */
 void QuickChangeLoadSwapEffects(unsigned int *eff_pack);
+/**
+ * On a dungeon floor, loads the swap rows' picks that the floor does not have yet, as the options close, so a pick
+ * changed mid-floor plays on the next swap instead of the next floor; it keeps a few effect texture blocks free for
+ * monsters, and waits for the next floor when they are short.
+ */
+void QuickChangeLoadPickedSwapEffects();
 /**
  * Whether a kSwapEffects entry can play on this floor now: true away from the dungeon and for Off.
  */

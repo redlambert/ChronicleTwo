@@ -89,6 +89,7 @@ void BeginBinding() {
 }
 
 void Close() {
+    QuickChangeLoadPickedSwapEffects();
     QuickChangeSoundPreview(0, 0, 0);
     g_screen.open = false;
     g_screen.binding = -1;

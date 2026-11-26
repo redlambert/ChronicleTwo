@@ -134,12 +134,12 @@ constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupHelp = {
 Row SwapEffect(int group) {
     Row row{.key = std::format("game.swap_{}_effect", kSwapGroupKeys[group]),
             .label = std::format("{}: effect", kSwapGroupLabels[group]),
-            .help = std::format("{}\nPlays around the character. A new pick that this floor lacks loads with the next floor.",
+            .help = std::format("{}\nPlays around the character. New picks load as the options close.",
                                 kSwapGroupHelp[group])};
     row.value = [group](const Config &c) {
         const int effect = std::clamp(c.swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
         return std::format("{} ({}/{}){}", kSwapEffects[effect].label, effect, kSwapEffects.size() - 1,
-                           QuickChangeSwapEffectLoaded(effect) ? "" : ", next floor");
+                           QuickChangeSwapEffectLoaded(effect) ? "" : ", loads on close");
     };
     row.step = [group](Config &c, int direction) {
         const int count = static_cast<int>(kSwapEffects.size());
