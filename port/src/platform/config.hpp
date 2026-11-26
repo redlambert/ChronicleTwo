@@ -96,12 +96,13 @@ struct Config : HostSettings {
     bool         shared_badge_exp = false;     /**< Shares a quarter of Monica's absorption with other unlocked badges. */
     // Per kind of quick change (SwapGroup: into Max or Monica, into the Ridepod, into the monster form), the effect it
     // plays around the character (game.swap_<group>_effect, a kSwapEffects key) and the sound it plays as the new
-    // character appears (game.swap_<group>_sound: "off", "battle:N" for the dungeon's shared battle sounds or
-    // "system:N" for the menu and system sounds).
+    // character appears (game.swap_<group>_sound: "off", "battle:N" for the dungeon's shared battle sounds,
+    // "system:N" for the menu and system sounds or "character:N" for the new character's own sounds). The human
+    // swap defaults to Max's charge release and battle sound 73.
     std::array<int, SWAP_GROUP_COUNT> swap_effect = {kSwapEffectMaxRelease, kSwapEffectRidepodFlash,
                                                      kSwapEffectMonicaMagic}; /**< kSwapEffects index. */
-    std::array<int, SWAP_GROUP_COUNT> swap_sound_set{};                       /**< 0 none, 1 battle sounds, 2 system sounds. */
-    std::array<int, SWAP_GROUP_COUNT> swap_sound{};                           /**< Sound number within the set. */
+    std::array<int, SWAP_GROUP_COUNT> swap_sound_set = {1, 0, 0};             /**< 0 none, 1 battle, 2 system, 3 character sounds. */
+    std::array<int, SWAP_GROUP_COUNT> swap_sound = {73, 0, 0};                /**< Sound number within the set. */
     ConfigAspect aspect = ConfigAspect::Auto;
     float        ui_scale = 1.0f;
     bool         font_sharp = true;

@@ -105,17 +105,20 @@ Row Resolution() {
     return row;
 }
 
-// How many numbers a landing sound set steps through where it is not loaded (battle sounds outside a dungeon).
+// How many numbers a landing sound set steps through where it is not loaded (battle sounds outside a dungeon, or a
+// character's own sounds while playing as another).
 constexpr int kUnloadedSoundSet = 256;
+// The last landing sound set: 1 battle, 2 system, 3 the new character's own sounds.
+constexpr int kLastSoundSet = 3;
 
-int SoundSetSize(int set) {
-    const int count = QuickChangeSoundCount(set);
+int SoundSetSize(int set, int group) {
+    const int count = QuickChangeSoundCount(set, group);
     return count > 0 ? count : kUnloadedSoundSet;
 }
 
 // A loaded set steps over its empty numbers; an unloaded one steps through every number.
-bool SoundUsable(int set, int number) {
-    return QuickChangeSoundCount(set) <= 0 || QuickChangeSoundPlayable(set, number);
+bool SoundUsable(int set, int group, int number) {
+    return QuickChangeSoundCount(set, group) <= 0 || QuickChangeSoundPlayable(set, group, number);
 }
 
 // The Game page's names for the swap groups, in SwapGroup order.
@@ -131,10 +134,12 @@ constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupHelp = {
 Row SwapEffect(int group) {
     Row row{.key = std::format("game.swap_{}_effect", kSwapGroupKeys[group]),
             .label = std::format("{}: effect", kSwapGroupLabels[group]),
-            .help = std::format("{}\nPlays around the character from the swap's press.", kSwapGroupHelp[group])};
+            .help = std::format("{}\nPlays around the character. A new pick that this floor lacks loads with the next floor.",
+                                kSwapGroupHelp[group])};
     row.value = [group](const Config &c) {
         const int effect = std::clamp(c.swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
-        return std::string(kSwapEffects[effect].label);
+        return std::format("{} ({}/{}){}", kSwapEffects[effect].label, effect, kSwapEffects.size() - 1,
+                           QuickChangeSwapEffectLoaded(effect) ? "" : ", next floor");
     };
     row.step = [group](Config &c, int direction) {
         const int count = static_cast<int>(kSwapEffects.size());
@@ -144,11 +149,13 @@ Row SwapEffect(int group) {
 }
 
 // The sound a kind of swap plays as the new character appears: Off, then the battle sounds, then the system sounds,
-// and round to Off.
+// then the new character's own sounds, and round to Off.
 Row SwapSound(int group) {
     Row row{.key = std::format("game.swap_{}_sound", kSwapGroupKeys[group]),
             .label = std::format("{}: sound", kSwapGroupLabels[group]),
-            .help = std::format("{} Plays as the new character appears.\nLeft/Right plays each; battle sounds play in dungeons.", kSwapGroupHelp[group])};
+            .help = std::format("{} Plays as the new character appears.\nLeft/Right plays each; battle sounds play in dungeons, "
+                                "character sounds while you play as that character.",
+                                kSwapGroupHelp[group])};
     row.value = [group](const Config &c) {
         if (c.swap_sound_set[group] == 1) {
             return std::format("Battle {}", c.swap_sound[group]);
@@ -156,20 +163,23 @@ Row SwapSound(int group) {
         if (c.swap_sound_set[group] == 2) {
             return std::format("System {}", c.swap_sound[group]);
         }
+        if (c.swap_sound_set[group] == 3) {
+            return std::format("Character {}", c.swap_sound[group]);
+        }
         return std::string("Off");
     };
     row.step = [group](Config &c, int direction) {
         int set = c.swap_sound_set[group];
         int number = c.swap_sound[group];
-        for (int tried = 0; tried < 2 * (kUnloadedSoundSet + 4096); ++tried) {
+        for (int tried = 0; tried < kLastSoundSet * (kUnloadedSoundSet + 4096); ++tried) {
             if (direction > 0) {
                 if (set == 0) {
                     set = 1;
                     number = 0;
-                } else if (number + 1 < SoundSetSize(set)) {
+                } else if (number + 1 < SoundSetSize(set, group)) {
                     ++number;
-                } else if (set == 1) {
-                    set = 2;
+                } else if (set < kLastSoundSet) {
+                    ++set;
                     number = 0;
                 } else {
                     set = 0;
@@ -177,19 +187,19 @@ Row SwapSound(int group) {
                 }
             } else {
                 if (set == 0) {
-                    set = 2;
-                    number = SoundSetSize(2) - 1;
+                    set = kLastSoundSet;
+                    number = SoundSetSize(set, group) - 1;
                 } else if (number > 0) {
-                    number = std::min(number - 1, SoundSetSize(set) - 1);
-                } else if (set == 2) {
-                    set = 1;
-                    number = SoundSetSize(1) - 1;
+                    number = std::min(number - 1, SoundSetSize(set, group) - 1);
+                } else if (set > 1) {
+                    --set;
+                    number = SoundSetSize(set, group) - 1;
                 } else {
                     set = 0;
                     number = 0;
                 }
             }
-            if (set == 0 || SoundUsable(set, number)) {
+            if (set == 0 || SoundUsable(set, group, number)) {
                 break;
             }
         }

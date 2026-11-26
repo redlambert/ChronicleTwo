@@ -40,15 +40,26 @@ void PortFinishQuickChange();
 
 /**
  * The landing sound sets for the Game page's swap sound rows: 1 the dungeon's shared battle sounds, 2 the menu and
- * system sounds. How many sounds a set holds where it is loaded now (0 where it is not loaded).
+ * system sounds, 3 the new character's own sounds. How many sounds a set holds where it is loaded now for that kind
+ * of swap (SwapGroup), 0 where it is not loaded; a character's own sounds are loaded only while playing as it.
  */
-int QuickChangeSoundCount(int set);
+int QuickChangeSoundCount(int set, int group);
 /**
- * Whether one sound of a landing sound set is loaded and playable.
+ * Whether one sound of a landing sound set is loaded and playable for that kind of swap.
  */
-bool QuickChangeSoundPlayable(int set, int number);
+bool QuickChangeSoundPlayable(int set, int group, int number);
 /**
  * Plays one sound of a landing sound set as the Game page's preview, first stopping the preview before it, which
  * can loop; set 0 only stops it.
  */
-void QuickChangeSoundPreview(int set, int number);
+void QuickChangeSoundPreview(int set, int group, int number);
+
+/**
+ * Loads the effects the swap rows picked that the dungeon's own set leaves out, while the floor loads, from the
+ * dungeon's effect pack (eff_pack) or dungeon/eff_script.
+ */
+void QuickChangeLoadSwapEffects(unsigned int *eff_pack);
+/**
+ * Whether a kSwapEffects entry can play on this floor now: true away from the dungeon and for Off.
+ */
+bool QuickChangeSwapEffectLoaded(int choice);

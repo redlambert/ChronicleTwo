@@ -8138,41 +8138,37 @@ int  windup_request = -1;
 int  windup_ticks = 0;
 int  windup_loop = -1;
 int  windup_poll_frame = -1;
-// Max's charge attack release (c01tame), by its effect name, played on every swap whoever is changing. Started at
-// the press, the light pillar peaks about 0.3 seconds in, on the last image before the swap loads, which the screen
-// holds through the pause; the orbs then bloom on the new character. The effect itself plays no sound and never hits.
-char kSwapReleaseMax[] = "\x83\x86\x83\x8A\x83\x58\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
-char kSwapReleaseMonica[] = "\x83\x82\x83\x6A\x83\x4A\x97\xAD\x82\xDF\x8D\x55\x8C\x82";
-char kSwapMonicaMagic[] = "\x83\x82\x83\x6A\x83\x4A\x96\x82\x96\x40\x81\x7C\x97\xAD\x82\xDF";
-char kSwapRidepodFlash[] = "\x83\x7D\x83\x59\x83\x8B\x83\x74\x83\x89\x83\x62\x83\x56\x83\x85";
-char kSwapDust[] = "\x8D\xBB\x89\x8C";
-char kSwapGuard[] = "\x83\x4B\x81\x5B\x83\x68\x83\x47\x83\x74\x83\x46\x83\x4E\x83\x67\x82\x60";
-char kSwapHeal[] = "\x92\xCA\x8F\xED\x89\xF1\x95\x9C";
+// The effect table row of each kSwapEffects entry, found by its script name on first use; -1 for Off or a row the
+// table lacks.
+int SwapEffectBaseNo(int choice) {
+    static std::array<int, kSwapEffects.size()> rows = [] {
+        std::array<int, kSwapEffects.size()> found{};
+        for (std::size_t entry = 0; entry < kSwapEffects.size(); ++entry) {
+            found[entry] = -1;
+            for (int row = 0; row < EFF_SPT_BASE_DEF_NUM && !kSwapEffects[entry].script.empty(); ++row) {
+                if (kSwapEffects[entry].script == std::string_view(eff_spt_base_def[row].script)) {
+                    found[entry] = row;
+                    break;
+                }
+            }
+        }
+        return found;
+    }();
+    return choice >= 0 && choice < static_cast<int>(rows.size()) ? rows[static_cast<std::size_t>(choice)] : -1;
+}
 
-/**
- * How the swap starts one kSwapEffects entry: its Shift-JIS effect name (Max's and Monica's charge releases,
- * Monica's magic charge, the Ridepod's muzzle flash, dust, the guard sparkle and the item-use recovery sparkle),
- * whether its position vectors sit at the body's middle instead of the feet, and when it starts. The charge releases
- * start at the press, so their peak lands on the frame held through the swap's pause and their orbs bloom on the new
- * character; they follow the character themselves. The short effects would be over before the pause, so they start
- * as the new character appears, on it.
- */
-struct SwapEffectStart {
-    char *name;
-    bool  body_middle;
-    bool  at_press;
-};
-
-const std::array<SwapEffectStart, kSwapEffects.size()> kSwapEffectStarts = {{
-    {nullptr, false, true},
-    {kSwapReleaseMax, false, true},
-    {kSwapReleaseMonica, false, true},
-    {kSwapMonicaMagic, true, false},
-    {kSwapRidepodFlash, true, false},
-    {kSwapDust, false, false},
-    {kSwapGuard, true, false},
-    {kSwapHeal, false, false},
-}};
+// Whether an effect table row is loaded in the dungeon's effect manager now.
+bool SwapEffectRowLoaded(int row) {
+    if (FxScriptMan == nullptr || row < 0) {
+        return false;
+    }
+    for (const EFF_SPT_BASE *entry : FxScriptMan->base) {
+        if (entry != nullptr && entry->base_no == row) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Marks the swap's own effects in their fourth work vector component, which the game sets to 1 and the scripts
 // never read, so a pointer is only trusted while the effect it names is still the swap's.
@@ -8658,16 +8654,16 @@ void StartSwapEffect(bool at_press) {
     if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
         return;
     }
-    const int choice = std::clamp(ConfigGet().swap_effect[swap_group], 0, static_cast<int>(kSwapEffects.size()) - 1);
-    const SwapEffectStart &start = kSwapEffectStarts[choice];
-    if (start.name == nullptr || start.at_press != at_press) {
+    const int               choice = std::clamp(ConfigGet().swap_effect[swap_group], 0, static_cast<int>(kSwapEffects.size()) - 1);
+    const SwapEffectChoice &start = kSwapEffects[choice];
+    if (start.script.empty() || start.at_press != at_press) {
         return;
     }
 
     CScene      *scene = GetMainScene();
     const int    owner = scene != nullptr && scene->player_chara >= 0 ? scene->player_chara : 0;
-    const int    base = FxScriptMan->SearchBaseNo(start.name);
-    _EFF_SCRIPT *effect = base >= 0 ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
+    const int    base = SwapEffectBaseNo(choice);
+    _EFF_SCRIPT *effect = SwapEffectRowLoaded(base) ? FxScriptMan->CreateEffSpt(base, owner, 0) : nullptr;
     if (effect != nullptr) {
         // Effects that are not the charge releases are placed by their work vectors, which the game's own callers
         // set to a hand, a muzzle or the feet: here, the character's feet or the middle of the body.
@@ -8733,15 +8729,30 @@ void StepSwapEffectLife() {
 }
 
 /**
- * The loaded bank of a landing sound set: 1 the scene's battle sounds, 2 the system sounds; -1 where it has none.
+ * The kind of swap (SwapGroup) that changes into the character being played now.
  */
-unsigned int SwapSoundBank(int set) {
+int PlayedSwapGroup() {
+    const int chara = GetUserDataMan() != nullptr ? GetUserDataMan()->active_chr_no : -1;
+    return chara == USER_CHARA_ROBO      ? SWAP_GROUP_RIDEPOD
+           : chara == USER_CHARA_MONSTER ? SWAP_GROUP_MONSTER
+                                         : SWAP_GROUP_HUMAN;
+}
+
+/**
+ * The loaded bank of a landing sound set for a kind of swap: 1 the scene's battle sounds, 2 the system sounds, 3 the
+ * sounds of the character played now, only while it is the kind that swap changes into; -1 where it has none.
+ */
+unsigned int SwapSoundBank(int set, int group) {
+    CScene *scene = GetMainScene();
     if (set == 1) {
-        CScene *scene = GetMainScene();
         return scene != nullptr ? static_cast<unsigned int>(scene->se_battle_id) : static_cast<unsigned int>(-1);
     }
     if (set == 2) {
         return static_cast<unsigned int>(GetSystemSndID());
+    }
+    if (set == 3 && scene != nullptr && group == PlayedSwapGroup()) {
+        CCharacter2 *chara = scene->GetCharacter(scene->player_chara >= 0 ? scene->player_chara : 0);
+        return chara != nullptr ? chara->sound_info.se_bank : static_cast<unsigned int>(-1);
     }
     return static_cast<unsigned int>(-1);
 }
@@ -8756,7 +8767,7 @@ void PlaySwapLandingSound() {
     if (PortLoopNo != LOOP_DUNGEON || set == 0) {
         return;
     }
-    const unsigned int bank = SwapSoundBank(set);
+    const unsigned int bank = SwapSoundBank(set, swap_group);
     const bool         playable = sndSeAvailable(bank, number);
     if (playable) {
         sndSePlay(bank, number, 0);
@@ -8764,7 +8775,7 @@ void PlaySwapLandingSound() {
         landing_number = number;
         landing_ticks = kSwapEffectTicks;
     }
-    CT_LOG_INFO(Menu, "quick change: landing sound {} {} {}", set == 1 ? "battle" : "system", number,
+    CT_LOG_INFO(Menu, "quick change: landing sound {} {} {}", set == 1 ? "battle" : set == 2 ? "system" : "character", number,
                 playable ? "plays" : "is not loaded here");
 }
 
@@ -8926,25 +8937,69 @@ void PortStepQuickChangeEffect() {
     }
 }
 
-int QuickChangeSoundCount(int set) {
-    return sndGetSeCount(SwapSoundBank(set));
+int QuickChangeSoundCount(int set, int group) {
+    return sndGetSeCount(SwapSoundBank(set, group));
 }
 
-bool QuickChangeSoundPlayable(int set, int number) {
-    return sndSeAvailable(SwapSoundBank(set), number);
+bool QuickChangeSoundPlayable(int set, int group, int number) {
+    return sndSeAvailable(SwapSoundBank(set, group), number);
 }
 
-void QuickChangeSoundPreview(int set, int number) {
+void QuickChangeSoundPreview(int set, int group, int number) {
     if (preview_bank != static_cast<unsigned int>(-1)) {
         sndSeStop(preview_bank, preview_number, 0);
         preview_bank = static_cast<unsigned int>(-1);
     }
-    const unsigned int bank = SwapSoundBank(set);
+    const unsigned int bank = SwapSoundBank(set, group);
     if (set != 0 && sndSeAvailable(bank, number)) {
         sndSePlay(bank, number, 0);
         preview_bank = bank;
         preview_number = number;
     }
+}
+
+void QuickChangeLoadSwapEffects(unsigned int *eff_pack) {
+    if (FxScriptMan == nullptr || !SwapReleaseEnabled()) {
+        return;
+    }
+    constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kGroupNames = {"human", "Ridepod", "monster"};
+    for (int group = 0; group < SWAP_GROUP_COUNT; ++group) {
+        const int choice = std::clamp(ConfigGet().swap_effect[group], 0, static_cast<int>(kSwapEffects.size()) - 1);
+        const int row = SwapEffectBaseNo(choice);
+        if (row < 0 || SwapEffectRowLoaded(row)) {
+            continue;
+        }
+        const SwapEffectChoice &effect = kSwapEffects[choice];
+        const EFF_SPT_BASE_DEF &definition = eff_spt_base_def[row];
+        // A model effect whose model is missing would run with no model, so it is left out.
+        const bool model_missing = !effect.in_pack && definition.type == EFF_SPT_BASE_CHR &&
+                                   datapacks::Candidates("dungeon/eff_script/" + std::string(definition.file) + ".gltf").empty();
+        int        result = -1;
+        if (!model_missing) {
+            result = effect.in_pack ? FxScriptMan->BuildPack(row, eff_pack, nullptr, -1)
+                                    : FxScriptMan->LoadBaseEffSpt(row, nullptr, -1);
+        }
+        // The pollen cloud starts its small part itself.
+        if (result > 0 && effect.script == "spore") {
+            for (int part = 0; part < EFF_SPT_BASE_DEF_NUM; ++part) {
+                if (std::string_view(eff_spt_base_def[part].script) == "spore_sub") {
+                    FxScriptMan->LoadBaseEffSpt(part, nullptr, -1);
+                    break;
+                }
+            }
+        }
+        CT_LOG_INFO(Menu, "quick change: {} swap effect {} {} with the floor (effect texture blocks {} of {} in use)",
+                    kGroupNames[group], effect.label,
+                    result > 0 ? "loaded" : model_missing ? "has no model file, not loaded" : "could not be loaded",
+                    FxScriptMan->texb_used, FxScriptMan->texb_num);
+    }
+}
+
+bool QuickChangeSwapEffectLoaded(int choice) {
+    if (PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr || choice <= 0) {
+        return true;
+    }
+    return SwapEffectRowLoaded(SwapEffectBaseNo(choice));
 }
 
 void PortDrawQuickChangeBanner() {

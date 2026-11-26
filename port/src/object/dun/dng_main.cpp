@@ -765,6 +765,9 @@ void InitDungeonMain(INIT_LOOP_ARG arg) {
     FxScriptMan->BuildPack("\x83\x82\x83j\x83J\x96\x82\x96@\x81|\x89\xce\x83q\x83"
                            "b\x83g",
                            eff_pack, nullptr, -1);
+    // The swap rows' effects that the dungeon's own set leaves out, loaded with the floor so the first swap never
+    // waits for them.
+    QuickChangeLoadSwapEffects(reinterpret_cast<unsigned int *>(eff_pack));
     DngMainScene->AssignEffect(0, FxScriptMan, nullptr);
     FxScriptMan->load_buffer = BuffReadData;
     CCharacter2 *rocket = FxScriptMan->GetBaseChara("\x83\x8f\x83"

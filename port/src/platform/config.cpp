@@ -248,7 +248,7 @@ constexpr int kSwapSoundMax = 4095;
 // The settings file names of the swap groups, in SwapGroup order.
 constexpr std::array<std::string_view, SWAP_GROUP_COUNT> kSwapGroupNames = {"human", "ridepod", "monster"};
 
-// game.swap_<group>_sound: "off", "battle:N" or "system:N".
+// game.swap_<group>_sound: "off", "battle:N", "system:N" or "character:N".
 bool ReadSwapSound(const Json &value, Config &config, int group) {
     if (!value.is_string()) {
         return false;
@@ -259,7 +259,7 @@ bool ReadSwapSound(const Json &value, Config &config, int group) {
         config.swap_sound[group] = 0;
         return true;
     }
-    const std::pair<std::string_view, int> sets[] = {{"battle:", 1}, {"system:", 2}};
+    const std::pair<std::string_view, int> sets[] = {{"battle:", 1}, {"system:", 2}, {"character:", 3}};
     for (const auto &[prefix, set] : sets) {
         if (!text.starts_with(prefix) || text.size() == prefix.size() || text.size() > prefix.size() + 4) {
             continue;
@@ -287,6 +287,9 @@ std::string SwapSoundName(const Config &config, int group) {
     }
     if (config.swap_sound_set[group] == 2) {
         return std::format("system:{}", config.swap_sound[group]);
+    }
+    if (config.swap_sound_set[group] == 3) {
+        return std::format("character:{}", config.swap_sound[group]);
     }
     return "off";
 }

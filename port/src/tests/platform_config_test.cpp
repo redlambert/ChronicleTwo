@@ -140,7 +140,9 @@ TEST_F(PlatformConfig, FullFileRoundTrips) {
 
 TEST_F(PlatformConfig, SwapSettingsHaveDefaultsAndRoundTrip) {
     const Config defaults = ConfigParse("");
-    EXPECT_EQ(defaults.swap_sound_set, (std::array<int, SWAP_GROUP_COUNT>{}));
+    EXPECT_EQ(defaults.swap_sound_set, (std::array<int, SWAP_GROUP_COUNT>{1, 0, 0}));
+    EXPECT_EQ(defaults.swap_sound[SWAP_GROUP_HUMAN], 73);
+    EXPECT_EQ(ConfigParse(R"({"game":{"swap_monster_sound":"character:4"}})").swap_sound_set[SWAP_GROUP_MONSTER], 3);
     EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_HUMAN], kSwapEffectMaxRelease);
     EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_RIDEPOD], kSwapEffectRidepodFlash);
     EXPECT_EQ(defaults.swap_effect[SWAP_GROUP_MONSTER], kSwapEffectMonicaMagic);
@@ -158,7 +160,7 @@ TEST_F(PlatformConfig, SwapSettingsHaveDefaultsAndRoundTrip) {
     EXPECT_EQ(ConfigParse(R"({"audio":{"swap_sound":"battle:7"}})").swap_sound[SWAP_GROUP_HUMAN], 7);
 
     for (const char *value : {"null", "12", "\"loud\"", "\"battle:\"", "\"battle:-1\"", "\"battle:99999\""}) {
-        EXPECT_EQ(ConfigParse(std::string("{\"game\":{\"swap_human_sound\":") + value + "}}").swap_sound_set[SWAP_GROUP_HUMAN], 0)
+        EXPECT_EQ(ConfigParse(std::string("{\"game\":{\"swap_human_sound\":") + value + "}}").swap_sound_set[SWAP_GROUP_HUMAN], 1)
             << value;
     }
     EXPECT_EQ(ConfigParse(R"({"game":{"swap_human_effect":"sparkles"}})").swap_effect[SWAP_GROUP_HUMAN], kSwapEffectMaxRelease);

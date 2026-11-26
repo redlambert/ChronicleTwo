@@ -74,7 +74,7 @@ void Change(int direction) {
             }
         }
         if (group >= 0) {
-            QuickChangeSoundPreview(config.swap_sound_set[group], config.swap_sound[group]);
+            QuickChangeSoundPreview(config.swap_sound_set[group], group, config.swap_sound[group]);
         } else {
             MenuSePlay(SYSTEM_SE_CURSOR);
         }
@@ -89,7 +89,7 @@ void BeginBinding() {
 }
 
 void Close() {
-    QuickChangeSoundPreview(0, 0);
+    QuickChangeSoundPreview(0, 0, 0);
     g_screen.open = false;
     g_screen.binding = -1;
     g_wait_source.clear();
