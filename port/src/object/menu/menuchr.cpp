@@ -8151,24 +8151,27 @@ char kSwapHeal[] = "\x92\xCA\x8F\xED\x89\xF1\x95\x9C";
 
 /**
  * How the swap starts one kSwapEffects entry: its Shift-JIS effect name (Max's and Monica's charge releases,
- * Monica's magic charge, the Ridepod's muzzle flash, dust, the guard sparkle and the item-use recovery sparkle), and
- * whether its position vectors sit at the body's middle instead of the feet. The charge releases follow the
- * character themselves.
+ * Monica's magic charge, the Ridepod's muzzle flash, dust, the guard sparkle and the item-use recovery sparkle),
+ * whether its position vectors sit at the body's middle instead of the feet, and when it starts. The charge releases
+ * start at the press, so their peak lands on the frame held through the swap's pause and their orbs bloom on the new
+ * character; they follow the character themselves. The short effects would be over before the pause, so they start
+ * as the new character appears, on it.
  */
 struct SwapEffectStart {
     char *name;
     bool  body_middle;
+    bool  at_press;
 };
 
 const std::array<SwapEffectStart, kSwapEffects.size()> kSwapEffectStarts = {{
-    {nullptr, false},
-    {kSwapReleaseMax, false},
-    {kSwapReleaseMonica, false},
-    {kSwapMonicaMagic, true},
-    {kSwapRidepodFlash, true},
-    {kSwapDust, false},
-    {kSwapGuard, true},
-    {kSwapHeal, false},
+    {nullptr, false, true},
+    {kSwapReleaseMax, false, true},
+    {kSwapReleaseMonica, false, true},
+    {kSwapMonicaMagic, true, false},
+    {kSwapRidepodFlash, true, false},
+    {kSwapDust, false, false},
+    {kSwapGuard, true, false},
+    {kSwapHeal, false, false},
 }};
 
 // Marks the swap's own effects in their fourth work vector component, which the game sets to 1 and the scripts
@@ -8648,20 +8651,16 @@ bool SwapEffectLive() {
 }
 
 /**
- * Starts the effect chosen for this kind of swap on the player: what the Game page's swap effect row names for
- * the swap's group. Dungeons only; nothing where the effect is not loaded.
+ * Starts the effect chosen for this kind of swap on the player, if it starts at this moment: at the press
+ * (at_press true) or as the new character appears (false). Dungeons only; nothing where the effect is not loaded.
  */
-void StartSwapRelease() {
-    const int target = PortLoopNo == LOOP_DUNGEON ? dc2::dungeon::ChangeSetUnitCore(windup_request) : -1;
-    swap_group = target == USER_CHARA_ROBO      ? SWAP_GROUP_RIDEPOD
-                 : target == USER_CHARA_MONSTER ? SWAP_GROUP_MONSTER
-                                                : SWAP_GROUP_HUMAN;
+void StartSwapEffect(bool at_press) {
     if (!SwapReleaseEnabled() || PortLoopNo != LOOP_DUNGEON || FxScriptMan == nullptr) {
         return;
     }
     const int choice = std::clamp(ConfigGet().swap_effect[swap_group], 0, static_cast<int>(kSwapEffects.size()) - 1);
     const SwapEffectStart &start = kSwapEffectStarts[choice];
-    if (start.name == nullptr) {
+    if (start.name == nullptr || start.at_press != at_press) {
         return;
     }
 
@@ -8693,9 +8692,22 @@ void StartSwapRelease() {
         }
     }
 
-    CT_LOG_INFO(Menu, "quick change: {} swap plays {} at the press{}",
+    CT_LOG_INFO(Menu, "quick change: {} swap plays {} {}{}",
                 swap_group == SWAP_GROUP_RIDEPOD ? "Ridepod" : swap_group == SWAP_GROUP_MONSTER ? "monster" : "human",
-                kSwapEffects[choice].label, effect != nullptr ? "" : ", but it is not loaded here");
+                kSwapEffects[choice].label, at_press ? "at the press" : "as the new character appears",
+                effect != nullptr ? "" : ", but it is not loaded here");
+}
+
+/**
+ * Notes which kind of swap the press starts (SwapGroup), from the character it changes into, and starts the effects
+ * that begin at the press.
+ */
+void StartSwapRelease() {
+    const int target = PortLoopNo == LOOP_DUNGEON ? dc2::dungeon::ChangeSetUnitCore(windup_request) : -1;
+    swap_group = target == USER_CHARA_ROBO      ? SWAP_GROUP_RIDEPOD
+                 : target == USER_CHARA_MONSTER ? SWAP_GROUP_MONSTER
+                                                : SWAP_GROUP_HUMAN;
+    StartSwapEffect(true);
 }
 
 /**
@@ -8900,6 +8912,7 @@ void PortStepQuickChangeEffect() {
         // A quick loadout keeps the same character, so it gets the glow without the sound.
         if (change_landing_sound) {
             change_landing_sound = false;
+            StartSwapEffect(false);
             PlaySwapLandingSound();
         }
     }
